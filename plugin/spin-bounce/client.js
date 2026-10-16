@@ -1570,7 +1570,7 @@ function attachSettingsPanel(o) {
   // --- 入口按钮
   let button = doc.getElementById(BUTTON_ID);
   if (!button) {
-    button = el(doc, 'button', { id: BUTTON_ID, type: 'button', title: '弹跳自转设置（点击展开）' });
+    button = el(doc, 'button', { id: BUTTON_ID, type: 'button', title: '粥友的酒 · 设置（点击展开）' });
     button.appendChild(el(doc, 'i', { textContent: '设置' }));
     doc.body.appendChild(button);
   }
@@ -1731,7 +1731,7 @@ function attachSettingsPanel(o) {
 }
 
 // ======== src/client.js ========
-// src/client.js — 《卫戍协议：盟约》trusted 插件入口（「弹跳自转」）。
+// src/client.js — 《卫戍协议：盟约》trusted 插件入口（「粥友的酒」，原名「弹跳自转」）。
 //
 // Copyright (C) 2026 Harekasa（本项目作者）
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -1743,7 +1743,7 @@ function attachSettingsPanel(o) {
 //     https://github.com/CyanF1sh/Stronghold-Protocol-CyanModPack
 // 第三方来源汇总见 NOTICE.md。
 //
-// src/client.js — 《卫戍协议：盟约》trusted 插件入口（「弹跳自转」）。
+// src/client.js — 《卫戍协议：盟约》trusted 插件入口（「粥友的酒」，原名「弹跳自转」）。
 //
 // ===================== 为什么这是 trusted 而不是 ui 插件 =====================
 //
@@ -2236,7 +2236,7 @@ function start(env = {}) {
   // 渲染层还没出现时只记一条日志：帧循环与状态行会持续重试，不需要额外分支。
   if (!getHost()) console.info(`${LOG} 等待渲染层（进入对局后才会出现）…；设置面板已可用`);
 
-  console.info(`${LOG} v${PLUGIN_VERSION} 已启动（弹跳自转${storage.settings.effect.enabled ? '开启' : '关闭'}，`
+  console.info(`${LOG} v${PLUGIN_VERSION} 已启动（粥友的酒${storage.settings.effect.enabled ? '开启' : '关闭'}，`
     + `音乐${storage.settings.music.enabled ? '开启' : '关闭'}）`);
 
   started = {

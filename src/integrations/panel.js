@@ -119,7 +119,7 @@ export function attachSettingsPanel(o) {
   // --- 入口按钮
   let button = doc.getElementById(BUTTON_ID);
   if (!button) {
-    button = el(doc, 'button', { id: BUTTON_ID, type: 'button', title: '弹跳自转设置（点击展开）' });
+    button = el(doc, 'button', { id: BUTTON_ID, type: 'button', title: '粥友的酒 · 设置（点击展开）' });
     button.appendChild(el(doc, 'i', { textContent: '设置' }));
     doc.body.appendChild(button);
   }
