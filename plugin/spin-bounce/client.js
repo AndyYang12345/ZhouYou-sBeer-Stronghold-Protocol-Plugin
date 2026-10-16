@@ -288,12 +288,33 @@ function createUnitEffect(target, options = {}) {
 
 // ---- 内部：把状态写到显示对象上 ------------------------------------------------------------
 
+/**
+ * 设定旋转支点。
+ *
+ * ★★ 这里踩过一个很显眼的坑：曾同时写 `pivot.y = +offset` 与 `position.y = -offset`，
+ * 以为"两者抵消、视觉位置不变"。**错**，结果是**所有单位整体上浮半个身高**。
+ *
+ * 原因：PIXI 的语义是
+ * ```
+ * 屏幕位置 = position − pivot        （渲染时再叠加子树自己的局部坐标）
+ * ```
+ * `pivot` 把容器的原点**移到体内**，而 `position` 决定**那个新原点落在哪**。
+ * 单位的 `body` 原本 `position = 0`、模型原点在脚底，也就是"脚底落在父坐标系原点"。
+ * 要"绕身体中部转、但脚底不动"，唯一正确的做法是：
+ *
+ * ```
+ * pivot.y = 半个身高      （原点从脚底移到中部）
+ * position.y = 0         （中部依然落在父坐标系原点 —— 不动！）
+ * ```
+ *
+ * 那时模型的脚底会落到 −half 处，由"中部在原点"等价换算出"脚底仍在原处"。
+ * 再去动 `position` 就是把整体平移，必然浮空。
+ */
 function applyPivot(st) {
   const t = st.target;
   if (!t) return;
-  // 旋转支点上移 pivotOffset，同时把对象下移同样的距离 —— 视觉位置不变，但绕新的支点转
   if (t.pivot) { t.pivot.x = 0; t.pivot.y = st.pivotOffset; }
-  if (t.position) t.position.y = -st.pivotOffset;
+  // ★ 绝不碰 position：body 原本就是 0，保持它才是"位置不变"。
   st.pivotReady = true;
 }
 

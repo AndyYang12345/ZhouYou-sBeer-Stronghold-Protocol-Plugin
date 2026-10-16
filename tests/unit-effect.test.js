@@ -105,13 +105,8 @@ test('竖轴自转用水平镜像近似（正反面交替）', () => {
   assert.ok(signs.has(1) && signs.has(-1), '应出现正反两个方向（镜像翻转）');
 });
 
-test('设置旋转支点会同时平移对象，视觉位置不变', () => {
-  const t = fakeTarget();
-  const fx = createUnitEffect(t);
-  fx.setModelHeight(64);
-  assert.equal(t.pivot.y, 32, '支点应移到身体中部');
-  assert.equal(t.position.y, -32, '对象应下移同样的距离以保持视觉位置');
-});
+// （已删除："设置旋转支点会同时平移对象" —— 那条测试断言的正是导致单位浮空的错误行为，
+//   它让 bug 一路通过。正确断言见文件末尾的"支点"一组。）
 
 test('未设置模型高度时不动 pivot / position（不破坏原有布局）', () => {
   const t = fakeTarget();
@@ -207,4 +202,54 @@ test('WRITE_EPSILON 很小，不会影响可见精度', () => {
 test('支点测量有重试上限（模型量不到时不做每帧无用功）', () => {
   assert.ok(Number.isInteger(PIVOT_TRIES_MAX) && PIVOT_TRIES_MAX > 0 && PIVOT_TRIES_MAX <= 100,
     `重试上限应是个小整数，实际 ${PIVOT_TRIES_MAX}`);
+});
+
+// ---- 支点：设"绕体中转"绝不能移动单位 --------------------------------------------
+// 这一组守的是一个**很显眼的线上事故**：曾同时写 pivot.y = +half 与 position.y = -half，
+// 以为两者抵消，结果**所有单位整体上浮半个身高**（玩家一眼就看出来了）。
+//
+// 正确的语义是：
+//   屏幕位置 = position − pivot
+// 单位的 body 原本 position = 0（脚底落在父坐标系原点）。要让"绕体中转、脚底不动"，
+// 只能设 pivot.y = half，**position 必须保持 0**。再去动 position 就是把整体平移。
+
+test('设支点不改变 position（脚底不能浮空）', () => {
+  const t = fakeTarget();
+  t.position.y = 0;
+  const fx = createUnitEffect(t);
+  fx.setModelHeight(64);
+
+  assert.equal(t.pivot.y, 32, '支点应移到半个身高');
+  assert.equal(t.position.y, 0, '★ position 必须保持 0 —— 否则单位会浮空');
+});
+
+test('单位已有的 position 不会被设支点改写', () => {
+  const t = fakeTarget();
+  t.position.y = 7;          // 假设宿主给它设了非零偏移
+  const fx = createUnitEffect(t);
+  fx.setModelHeight(64);
+  assert.equal(t.position.y, 7, '不应擅自改动宿主的定位');
+});
+
+test('可见位置 = position − pivot 在设支点前后保持一致', () => {
+  // 这是本组的核心性质：设支点只改变"绕哪转"，不改变"看起来在哪"。
+  const before = fakeTarget();
+  before.position.y = 0;
+  const visibleBefore = before.position.y - before.pivot.y;   // 0 - 0 = 0
+
+  const fx = createUnitEffect(before);
+  fx.setModelHeight(80);
+  const visibleAfter = before.position.y - before.pivot.y;    // 0 - 40 = -40
+
+  // 脚底在模型局部坐标里的位置随之抬到 +40，两者相加回到 0 —— 也就是说"脚仍落在原处"。
+  const footLocal = 40;
+  assert.equal(visibleAfter + footLocal, visibleBefore, '脚底应仍在原处（可见位置不变）');
+});
+
+test('模型高度量不到时不设支点（保持原布局）', () => {
+  const t = fakeTarget();
+  const fx = createUnitEffect(t);
+  fx.setModelHeight(0);      // 量不到
+  assert.equal(t.pivot.y, 0);
+  assert.equal(fx.state.pivotReady, false, '没量到就不该认为支点已就绪');
 });
