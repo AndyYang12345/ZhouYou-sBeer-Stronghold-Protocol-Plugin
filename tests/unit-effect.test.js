@@ -261,3 +261,83 @@ test('只有显式开启 spinPivot 才走支点补偿（默认关闭）', () => 
   assert.equal(t.pivot.y, 32);
   assert.equal(t.position.y, 32, '参考实现是两者同值，不是互为相反数');
 });
+
+// ---- 绕竖轴旋转（宽度必须真正连续过零）--------------------------------------------
+// 这一组守玩家反馈过的一个失败：「绕竖轴旋转没成功」。
+// 当时的实现是 `sx * (cos θ >= 0 ? 1 : -1)` —— 只取**符号**，横向只剩 ±1 两种宽度，
+// 结果变成"瞬间左右翻"，完全没有收缩过程。
+// 正确做法（参考 CyanFish CyanModPack, engine-pixi.js:429-431 与 frontback.js 抬头）：
+//     横向 = 原宽 × **带符号的 cos θ**
+// 即 θ=0 → 1（正面）、θ=90° → 0（侧对）、θ=180° → −1（镜像=背面）。
+
+/** 把 spin 放到指定角度后跑一帧，读回横向 scale。 */
+function widthAt(deg, opts = {}) {
+  const t = fakeTarget();
+  const fx = createUnitEffect(t, { spinAxis: 'vertical', spinPeriod: 2.7, squashDepth: 0, ...opts });
+  fx.state.spin = (deg * Math.PI) / 180;
+  fx.update(1 / 60);
+  return t.scale.x;
+}
+
+test('★ 横向宽度必须连续过零（不能只有 ±1 两档）', () => {
+  const samples = [];
+  for (let deg = 0; deg <= 360; deg += 5) samples.push(widthAt(deg));
+
+  const widths = samples.map(Math.abs);
+  // 必须存在大量"中间宽度"：若只取符号，|宽度| 只会有 1 和 0 两种值
+  const middling = widths.filter((w) => w > 0.08 && w < 0.92).length;
+  assert.ok(middling >= 20, `中间宽度应有大量取值（收缩过程），实际只有 ${middling} 个`);
+});
+
+test('θ=0 是完整正面，θ=180° 是镜像（负值）', () => {
+  assert.ok(Math.abs(widthAt(0) - 1) < 0.02, `0° 应约为 1，实际 ${widthAt(0)}`);
+  assert.ok(widthAt(180) < -0.95, `180° 应为负（镜像=背面），实际 ${widthAt(180)}`);
+});
+
+test('★ θ=90° 与 270° 宽度必须真正归零（侧对的那一帧）', () => {
+  // 台阶数取 4 的倍数才能保证 90° 落在网格点上；否则宽度只压到 0.05 左右就反弹，
+  // 看起来"没转到位"。
+  assert.ok(Math.abs(widthAt(90)) < 0.02, `90° 宽度应≈0，实际 ${widthAt(90)}`);
+  assert.ok(Math.abs(widthAt(270)) < 0.02, `270° 宽度应≈0，实际 ${widthAt(270)}`);
+});
+
+test('一整圈里宽度单调地"收窄→过零→张开"（不是跳变）', () => {
+  // 每 2° 采一次，相邻两次的宽度差不应出现大跳（连续性的直接检验）
+  let prev = widthAt(0);
+  let maxJump = 0;
+  for (let deg = 2; deg <= 360; deg += 2) {
+    const w = widthAt(deg);
+    maxJump = Math.max(maxJump, Math.abs(w - prev));
+    prev = w;
+  }
+  assert.ok(maxJump < 0.2, `相邻采样宽度不应有大跳，实际最大跳变 ${maxJump.toFixed(3)}`);
+});
+
+test('★ 绕竖轴模式不写 rotation（参考实现的口径：只有平面内才写）', () => {
+  const t = fakeTarget();
+  let rotWrites = 0;
+  Object.defineProperty(t, 'rotation', {
+    get() { return this._rot ?? 0; },
+    set(v) { rotWrites++; this._rot = v; },
+    configurable: true,
+  });
+  const fx = createUnitEffect(t, { spinAxis: 'vertical', spinPeriod: 2.7 });
+  for (let i = 0; i < 120; i++) fx.update(1 / 60);
+  assert.ok(rotWrites <= 1, `竖轴模式不应写 rotation（写了会把贴图倾斜、破坏轴转读感），实际 ${rotWrites} 次`);
+});
+
+test('平面内模式仍然写 rotation（那种效果就是要转角度）', () => {
+  const t = fakeTarget();
+  const fx = createUnitEffect(t, { spinAxis: 'screen', spinPeriod: 2.7 });
+  let seen = new Set();
+  for (let i = 0; i < 120; i++) { fx.update(1 / 60); seen.add(t.rotation.toFixed(4)); }
+  assert.ok(seen.size > 5, `平面内模式应产生多个角度，实际 ${seen.size}`);
+});
+
+test('宽度不会因挤压而丢失符号（挤压与轴转可叠加）', () => {
+  const t = fakeTarget();
+  const fx = createUnitEffect(t, { spinAxis: 'vertical', spinPeriod: 2.7, strength: 1.5 });
+  fx.state.spin = Math.PI;            // 180°，应为负
+  for (let i = 0; i < 10; i++) fx.update(1 / 60);
+  assert.ok(t.scale.x < 0, `180° 时叠加挤压也应保持负号，实际 ${t.scale.x}`);
+});

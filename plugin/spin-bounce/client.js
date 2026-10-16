@@ -434,34 +434,47 @@ function apply(st) {
 
   // 自转量化：把连续角度吸附到台阶上，写入次数因此从"每帧"降到"每台阶一次"。
   //
-  // 步数**按周期缩放**，目标是"每秒写入次数大致恒定"（≈ SPIN_WRITES_PER_SEC），
-  // 而不是"每圈固定步数"。
-  //
   // 推导：每秒写入次数 = steps / spinPeriod，要它等于 SPIN_WRITES_PER_SEC，
   // 于是 **steps = SPIN_WRITES_PER_SEC × spinPeriod**。
-  // 周期越长，一圈可以分更多步而不增加每秒写入 —— 慢速自转更顺滑，快速自转也不会失控。
-  // 下限 8 步（慢速也别看出台阶）、上限 60 步（不超过 60fps，超过就没意义了）。
-  // 目标是"每秒写入次数恒定"：steps = 每秒写入率 × 周期。
-  //
-  // 权衡（这是唯一要调的量）：
-  //   · 写入率 ↑ → 自转更顺滑，但每写一次就让 PIXI 重算该单位整棵子树（性能成本）
-  //   · 写入率 ↓ → 省性能，但快速自转时会看出台阶
-  // 默认 30 次/秒：在 1.1 秒/圈（较快）下约 33 台阶/圈（10.9°/台阶），肉眼已看不出；
-  // 早期用 8.9 次/秒时，1.1 秒/圈只有 10 台阶（约 36°/台阶）—— 那才是一眼可见的卡顿。
-  const steps = Math.max(8, Math.min(st.cfg.spinStepsMax ?? 240,
+  // 周期越长，一圈可以分更多步而不增加每秒写入；下限 8 步保证慢速也别看出台阶。
+  // 台阶数取 **4 的倍数**：这样 0° / 90° / 180° / 270° 必然落在网格点上，
+  // 宽度能真正归零（侧对的那一帧）与真正取到 ±1（正对 / 背面）。
+  // 否则 90° 会落在两格之间，宽度只压到 0.05 左右就反弹 —— 看起来"没转到位"。
+  const want = Math.max(8, Math.min(st.cfg.spinStepsMax ?? 240,
     Math.round((st.cfg.spinWritesPerSec ?? SPIN_WRITES_PER_SEC) * st.cfg.spinPeriod)));
-  const q = Math.round(st.spin / (2 * Math.PI) * steps) / steps * 2 * Math.PI;
+  const steps = Math.max(8, Math.round(want / 4) * 4);
 
   if (st.cfg.spinAxis === 'screen') {
-    // 屏幕平面内转：连挤压一起转，看起来像"躺倒着打转"
+    // 屏幕平面内转：直接写角度。台阶作用在**角度**上。
+    const q = Math.round(st.spin / (2 * Math.PI) * steps) / steps * 2 * Math.PI;
     writeTransform(t, sx, sy, st.baseRotation + q);
-  } else {
-    // 竖轴自转：2D 贴图无法真正绕 Y 轴转，这里用"水平镜像 × 侧倾"近似 ——
-    // 镜像让正反面交替出现，侧倾给一点透视暗示，合起来有"转过来"的读感。
-    const c = Math.cos(q);
-    writeTransform(t, sx * (c >= 0 ? 1 : -1), sy,
-      st.baseRotation + st.deform.squash * st.cfg.tiltFactor + Math.sin(q) * 0.12);
+    return;
   }
+
+  // ============================ 绕竖轴（梗图效果）============================
+  // 2D 贴图无法真的绕 Y 轴转，唯一可行的表达是**横向压扁**：
+  //
+  //     横向 = 原宽 × cos θ
+  //
+  // θ = 0 → 完整正面；θ = 90° → 宽度 0（侧对着你）；θ = 180° → cos θ = −1，
+  // 宽度取负 ⇒ **自然镜像**，于是露出背面。
+  //
+  // ★★ 这里曾写错成 `sx * (cos θ >= 0 ? 1 : -1)` —— 只取**符号**，横向只剩 ±1 两种宽度，
+  //    结果变成"瞬间左右翻"，完全没有收缩过程（玩家反馈"绕竖轴旋转没成功"）。
+  //    参考实现（CyanFish CyanModPack, engine-pixi.js:429-431）是从原始 scale 出发：
+  //        const x = s.sx * ctx.xK * axisK;      // axisK = 带符号的 cos θ
+  //    而 frontback.js 抬头逐字写明：**横向永远用带符号的 cos θ，不做 |cos θ| 修正**。
+  //
+  // ★ 同一份参考还写明：**绕竖直轴不写 rotation**（只有平面内才写）。写 rotation 会让
+  //   整张贴图在屏幕里倾斜，那是另一种效果，会把"轴转"的读感破坏掉。
+  //
+  // 台阶量化在 **角度**上、再取 cos（不是直接量化 cos 值）。
+  //
+  // 为什么：均匀的角度台阶给出的 cos 分布是"两端密、中间疏"——取 cos 值量化反而会在
+  // 过零附近把台阶跨过头（曾出现 90° 处写成 −0.037 而不是 0，宽度没有真正归零）。
+  // 量化角度则天然保证 90° 落在台阶上，宽度能真正到 0。
+  const a = Math.round(st.spin / (2 * Math.PI) * steps) / steps * 2 * Math.PI;
+  writeTransform(t, sx * Math.cos(a), sy, st.baseRotation);
 }
 
 // ======== src/integrations/units.js ========
