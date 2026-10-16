@@ -275,9 +275,22 @@ function djOptionsInto(effect, out) {
  * @param {number} t 共享时刻（秒）—— **全场同一个值**，所以天然同相
  * @param {object} effect 设置
  */
+/**
+ * 该单位此刻是否被游戏裁掉了（屏幕外）。
+ *
+ * 为什么要跳过：游戏自己在 `units.js:1690` 的 `_cull()` 里对屏幕外的单位
+ * **既不绘制也不推进动画**（只累计 `_offDt`，等它回到视野再补上）。
+ * 我们如果照旧每帧给它写变换，就是纯浪费 —— 还会把 `UNIT_BUDGET_PER_FRAME`
+ * 的预算占掉，导致真正在屏幕里的单位反而排不上。
+ */
+function isCulled(view) {
+  return view.culled === true || (view.root && view.root.visible === false);
+}
+
 export function driveUnitDj(view, t, effect) {
   const body = view && view.body;
   if (!body) return;
+  if (isCulled(view)) return;              // 屏幕外：游戏不画，我们也不写
   const st = djStateOf(view);
   const f = djFactors(djOptionsInto(effect, djOptsScratch), t, 0, st.f);
   djApply(body, st, f);

@@ -187,6 +187,21 @@ export function tickEffects(storage, host) {
   //   它没有逐单位的状态推进，所以既不需要 attachEffect、也没有弹簧/阈值/台阶，
   //   每帧只是几次乘加 —— 这正是"单位多时也不掉帧"的原因。
   const useDj = e.djMode !== false;
+
+  // ============================ 加载期让路 ============================
+  // "进入战斗"时游戏要解码单位贴图、建骨架、算 impostor 框，主线程本来就满。
+  // 此刻我们再往里塞每帧的变换写入，只会把那一帧推得更长。
+  // 判据用**宿主自己的自适应负载等级**（`render/app.js` 的 loadLevel，stats().lod）：
+  // 它 ≥2 说明游戏已经认为设备吃紧 —— 那我们也该让路，等它缓过来再继续。
+  // 这不是"关掉特效"，只是"这一小段时间不写"，每帧成本几乎为零，所以恢复是无感的。
+  if (!storage.suspended) storage.suspended = { on: false, t: 0 };
+  const susp = storage.suspended;
+  let loadLevel = 0;
+  try { loadLevel = h.raw?.stats?.().lod ?? 0; } catch { /* 拿不到就当 0 */ }
+  if (loadLevel >= 2) { susp.on = true; susp.t = sharedPhase; }
+  else if (susp.on && sharedPhase - susp.t > 1.5) susp.on = false;   // 负载降下来 1.5 秒后恢复
+  if (susp.on) return 0;
+
   let attached = 0;
   let driven = 0;
   for (let i = 0; i < list.length; i++) {
@@ -400,12 +415,15 @@ export function applyLiveSettings(storage, host) {
 export function statusOf(host) {
   const h = host !== undefined ? host : resolveHost();
   if (!h) return { host: false, units: 0, views: 0, penViews: 0, ticker: false };
+  let lod = 0;
+  try { lod = h.raw?.stats?.().lod ?? 0; } catch { /* ignore */ }
   return {
     host: true,
     ticker: !!h.ticker,
     views: h.views.size,
     penViews: h.penViews ? h.penViews.size : 0,
     units: collectUnits(h).length,
+    lod,
   };
 }
 
