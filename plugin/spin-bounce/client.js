@@ -1486,12 +1486,17 @@ const CSS = `
 #${PANEL_ID} small{display:block;color:#8a948f;font-size:10px;line-height:1.35}
 #${PANEL_ID} input[type=range]{width:1.5rem;flex:none}
 #${PANEL_ID} output{flex:none;width:.62rem;text-align:right;font-variant-numeric:tabular-nums;color:#4ed8af}
-#${PANEL_ID} .sbp-sw{flex:none;width:.42rem;height:.2rem;border-radius:99px;border:1px solid #3e4b45;
+/* ★ 开关：胶囊与圆点**必须用同一套单位**（这里统一 px）并把尺寸算准。
+   曾经胶囊用 rem（.42rem × .2rem）、圆点用 px（12px + translateX(16px)），
+   而根字号是 clamp(40px, 100vw/19.2, 240px)（1920 宽时 = 100px）⇒ 胶囊约 35px 宽，
+   圆点滑到底只到 16+12+2 = 30px，**永远差 5px 到不了右端**，看起来就像"圆点停在中间"。
+   现在 34 = 2(左内距) + 14(圆点) + 16(行程) + 2(右内距)，两端都对齐。 */
+#${PANEL_ID} .sbp-sw{flex:none;width:34px;height:18px;border-radius:99px;border:1px solid #3e4b45;
   background:#1e2421;position:relative;cursor:pointer;padding:0;transition:background .18s}
-#${PANEL_ID} .sbp-sw::after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;
+#${PANEL_ID} .sbp-sw::after{content:"";position:absolute;top:1px;left:2px;width:14px;height:14px;border-radius:50%;
   background:#5d6863;transition:transform .18s,background .18s}
 #${PANEL_ID} .sbp-sw[aria-checked=true]{background:rgba(78,216,175,.25);border-color:#4ed8af}
-#${PANEL_ID} .sbp-sw[aria-checked=true]::after{transform:translateX(16px);background:#4ed8af}
+#${PANEL_ID} .sbp-sw[aria-checked=true]::after{transform:translateX(15px);background:#4ed8af}
 #${PANEL_ID} .sbp-sub{margin:.12rem 0 0;padding:.1rem 0 0;border-top:1px solid #2f3a35}
 #${PANEL_ID} .sbp-sub[hidden]{display:none}
 #${PANEL_ID} .sbp-note{margin:.1rem 0 0;color:#8a948f;font-size:10px;line-height:1.4}
@@ -1576,7 +1581,7 @@ function attachSettingsPanel(o) {
   panel = el(doc, 'div', { id: PANEL_ID });
   panel.hidden = true;
 
-  panel.appendChild(el(doc, 'h3', { textContent: '弹跳自转' }));
+  panel.appendChild(el(doc, 'h3', { textContent: '粥友的酒' }));
 
   // 状态行：让玩家一眼看出插件有没有在工作（而不是靠猜）
   const statusLine = el(doc, 'p', { className: 'sbp-note', textContent: '状态：读取中…' });
@@ -1604,7 +1609,7 @@ function attachSettingsPanel(o) {
     musicRow.hidden = !v;
     o.onChange?.(settings);
   });
-  const effRow = row(doc, '弹跳自转', '单位在格子里压扁回弹并自转');
+  const effRow = row(doc, '粥友的酒', null);
   effRow.appendChild(eff.node);
   panel.appendChild(effRow);
 
@@ -1626,7 +1631,7 @@ function attachSettingsPanel(o) {
     }
     o.onChange?.(settings);
   });
-  const musicRow = row(doc, '自定义音乐', '独立于游戏 BGM；需自备音频文件');
+  const musicRow = row(doc, '喝酒的小曲', null);
   musicRow.appendChild(mus.node);
   panel.appendChild(musicRow);
 
@@ -1777,7 +1782,10 @@ const SETTINGS_KEY = 'sp.plugin.spinBounce.settings';
 const DEFAULT_SETTINGS = Object.freeze({
   effect: EFFECT_DEFAULTS,
   music: {
-    enabled: false,   // 浏览器会拦自动播放，也不该一进页面就吵
+    // 按项目要求默认**开启**。
+    // 注意浏览器会拦自动播放：插件会在首次用户手势（点击/按键）时自动起播，
+    // 所以默认开着不会变成"明明开着却没声音"。
+    enabled: true,
     volume: 0.55,
   },
 });

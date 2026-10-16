@@ -3,22 +3,26 @@
   "manifest": 2,
   "id": "spin-bounce",
   "name": {
-    "zh": "弹跳自转",
-    "en": "Spin & Bounce"
+    "zh": "粥友的酒",
+    "en": "ZhouYou's Beer"
   },
   "englishName": "Spin & Bounce",
-  "description": {
-    "zh": "所有我方与敌方单位都在自己的格子里一下一下地被压扁再回弹（欠阻尼弹簧，会过冲成拉伸），同时持续自转；敌方单位边行进边弹。死亡后停弹跳、继续旋转。可配自定义音乐，默认关闭。",
-    "en": "Every ally and enemy unit squashes and rebounds in place (an underdamped spring, so it overshoots into a stretch) while spinning continuously; enemies bounce as they walk. Death stops the bounce but keeps the spin. Optional custom music, off by default."
-  },
+  "description": "把「粥友的酒」那个梗做成单位特效：我方与敌方单位都在自己的格子里同步压扁—回弹，同时绕竖直轴自转（宽度按 cos θ 收缩、过零时自然镜像，并换成真正的背面立绘）。可在设置面板里分别开关「粥友的酒」与「喝酒的小曲」，后者播放你自备的音乐。",
   "version": "0.1.0",
   "app": ">=0.3.0 <0.4.0",
   "api": 1,
   "class": "trusted",
-  "scope": ["server", "room"],
-  "authors": ["Harekasa"],
+  "scope": [
+    "server",
+    "room"
+  ],
+  "authors": [
+    "Harekasa"
+  ],
   "license": "GPL-3.0-or-later",
-  "permissions": ["trusted.page"],
+  "permissions": [
+    "trusted.page"
+  ],
   "entry": {
     "client": "client.js"
   }

@@ -55,7 +55,10 @@ export const SETTINGS_KEY = 'sp.plugin.spinBounce.settings';
 export const DEFAULT_SETTINGS = Object.freeze({
   effect: EFFECT_DEFAULTS,
   music: {
-    enabled: false,   // 浏览器会拦自动播放，也不该一进页面就吵
+    // 按项目要求默认**开启**。
+    // 注意浏览器会拦自动播放：插件会在首次用户手势（点击/按键）时自动起播，
+    // 所以默认开着不会变成"明明开着却没声音"。
+    enabled: true,
     volume: 0.55,
   },
 });
