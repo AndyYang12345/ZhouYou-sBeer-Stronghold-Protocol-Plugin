@@ -35,16 +35,21 @@ export const DISCOVER_MS = 200;
 export function resolveHost(g = globalThis) {
   try {
     const safe = g ? g.__SP_VIEW__ : null;
-    if (!safe) return null;
+    if (!safe) { hostCache.key = null; hostCache.val = null; return null; }
     const raw = safe.raw && typeof safe.raw === 'object' ? safe.raw : safe;
     const dbg = raw.debug;
     const views = dbg && dbg.views;
-    if (!views || typeof views.values !== 'function') return null;
+    if (!views || typeof views.values !== 'function') { hostCache.key = null; hostCache.val = null; return null; }
+
+    // 复用上一次的结果：这个函数**每帧**都会被调用，而它的产物在一次对局里是稳定的。
+    // 用 `views` 的**实例同一性**判断缓存是否还有效 —— 换对局时游戏会换一个 Map。
+    if (hostCache.key === views && hostCache.val) return hostCache.val;
+
     const app = dbg.app;
     const ticker = app && app.ticker
       && typeof app.ticker.add === 'function' && typeof app.ticker.remove === 'function'
       ? app.ticker : null;
-    return {
+    const host = {
       raw,
       views,
       penViews: dbg.penViews && typeof dbg.penViews.values === 'function' ? dbg.penViews : null,
@@ -52,10 +57,18 @@ export function resolveHost(g = globalThis) {
       fx: dbg.fx || null,
       ticker,
     };
+    hostCache.key = views;
+    hostCache.val = host;
+    return host;
   } catch {
+    hostCache.key = null;
+    hostCache.val = null;
     return null;
   }
 }
+
+/** resolveHost 的缓存槽（避免每帧重建对象）。 */
+const hostCache = { key: null, val: null };
 
 /**
  * 遍历"所有可能出现单位视图的地方"。

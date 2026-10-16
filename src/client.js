@@ -124,7 +124,7 @@ const effects = new WeakMap();
 /** 当前帧的 dt（秒），由帧循环写入。 */
 let frameDt = 1 / 60;
 
-const stats = { ticks: 0, units: 0, ms: 0, at: 0, maxMs: 0 };
+const stats = { ticks: 0, units: 0, ms: 0, at: 0, maxMs: 0, attached: 0 };
 export const getStats = () => ({ ...stats });
 
 /**
@@ -133,36 +133,58 @@ export const getStats = () => ({ ...stats });
  * 每帧**重新收集**单位，而不是维护长期注册表：单位随对局生命周期来去匆匆
  * （`views` 是 Map，随时增删），重新收集最稳，开销也不高 —— 一次 Map 遍历加几个字段检查。
  */
+/**
+ * 每帧推进。
+ *
+ * ============================ 两个刻意的设计 ============================
+ *
+ * ① **每帧重新收集单位**（而不是维护长期注册表）：单位随对局生命周期来去匆匆
+ *    （`views` 是 Map，随时增删），重新收集最稳，成本也只是一次 Map 遍历。
+ *
+ * ② **新建特效有每帧预算**（ATTACH_BUDGET_PER_FRAME）。这一条是为"进入战斗那一下的卡顿"加的：
+ *    战斗开始时游戏会一次建好全部单位视图，若在同一帧里给每个单位都 attachEffect
+ *    （量模型高度、建弹簧状态、建 DOM 样式），30 个单位就是**同一帧里 30 次初始化** —— 一个尖峰。
+ *    改成每帧最多新接几个，初始化就被摊到十几帧里，人眼察觉不到，而那一下的卡顿消失。
+ *    已在驱动的单位不受预算限制（它们的每帧成本很小）。
+ */
+const ATTACH_BUDGET_PER_FRAME = 3;
+
 export function tickEffects(storage, host) {
   if (!storage.settings.effect.enabled) return 0;
   const h = host || resolveHost();
   if (!h) return 0;
   const t0 = storage.debug ? performance.now() : 0;
   const list = collectUnits(h);
+  let attached = 0;
+  let driven = 0;
   for (let i = 0; i < list.length; i++) {
     const view = list[i];
     let fx = effects.get(view);
     if (!fx) {
+      // 新单位：受每帧预算限制（见上），本帧超了就留到下一帧
+      if (attached >= ATTACH_BUDGET_PER_FRAME) continue;
       fx = attachEffect(view, storage.settings.effect);
       if (!fx) continue;
       effects.set(view, fx);
+      attached++;
     }
     driveUnit(view, fx, frameDt);
+    driven++;
   }
   if (storage.debug) {
     const ms = performance.now() - t0;
-    stats.ticks++; stats.units += list.length; stats.ms += ms;
+    stats.ticks++; stats.units += driven; stats.ms += ms; stats.attached += attached;
     if (ms > stats.maxMs) stats.maxMs = ms;
     const now = performance.now();
     if (!stats.at) stats.at = now;
     if (now - stats.at >= 2000) {
       console.info(`${LOG} 诊断：${stats.ticks} 帧 / ${(now - stats.at).toFixed(0)}ms，`
         + `平均 ${(stats.ms / Math.max(1, stats.ticks)).toFixed(2)}ms/帧，最慢 ${stats.maxMs.toFixed(2)}ms，`
-        + `单位数 ${list.length}`);
-      stats.ticks = 0; stats.units = 0; stats.ms = 0; stats.maxMs = 0; stats.at = now;
+        + `已接管 ${driven} 个，新接入 ${stats.attached}`);
+      stats.ticks = 0; stats.units = 0; stats.ms = 0; stats.maxMs = 0; stats.attached = 0; stats.at = now;
     }
   }
-  return list.length;
+  return driven;
 }
 
 // ---- 帧循环 ------------------------------------------------------------------

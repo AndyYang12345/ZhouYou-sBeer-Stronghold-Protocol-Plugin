@@ -168,3 +168,40 @@ test('kindOf 读 info.kind，缺失时返回空串', () => {
   assert.equal(kindOf({ info: {} }), '');
   assert.equal(kindOf(null), '');
 });
+
+// ---- 缓存（性能：resolveHost 每帧都被调用）-------------------------------------
+
+test('同一个对局内复用同一个 host 对象（避免每帧重建）', () => {
+  const g = fakeGlobal({ views: [unitView()] });
+  const a = resolveHost(g);
+  const b = resolveHost(g);
+  assert.equal(a, b, '★ 同一 views 实例应复用，否则每帧都在分配对象');
+});
+
+test('换了对局（views 换成新 Map）必须重建，不能拿旧视图', () => {
+  const g = fakeGlobal({ views: [unitView()] });
+  const a = resolveHost(g);
+  const fresh = [unitView()];
+  g.__SP_VIEW__.raw.debug.views = new Map(fresh.map((v, i) => [`n${i}`, v]));
+  const b = resolveHost(g);
+  assert.notEqual(b, a, '换了对局必须重建');
+  assert.equal(b.views.size, 1);
+  assert.equal(collectUnits(b)[0], fresh[0], '拿到的必须是新对局的单位');
+});
+
+test('缓存不影响 leader 的现读（首领换人仍然即时反映）', () => {
+  let cur = null;
+  const g = fakeGlobal({ views: [unitView()] });
+  Object.defineProperty(g.__SP_VIEW__.raw.debug, 'leader', { get: () => cur, configurable: true });
+  const h = resolveHost(g);
+  assert.equal(h.leader, null);
+  cur = unitView();
+  assert.ok(h.leader, '★ 缓存了 host 也不能把 leader 一起缓存住');
+});
+
+test('宿主消失后缓存立即失效（不返回过期 host）', () => {
+  const g = fakeGlobal({ views: [unitView()] });
+  assert.ok(resolveHost(g));
+  g.__SP_VIEW__ = null;
+  assert.equal(resolveHost(g), null, '★ 宿主没了就必须返回 null');
+});
