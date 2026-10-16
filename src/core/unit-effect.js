@@ -49,6 +49,8 @@ export const EFFECT_DEFAULTS = Object.freeze({
   //   false        —— 冲量式：每 1/pulsesPerSecond 秒踢一脚，靠欠阻尼弹簧回弹
   // 冲量式的起跳很陡，快速脉冲下会看出"一顿一顿"；连续式明显更顺，手感略软。
   spinSmooth: true,
+  // 正反面切换的死区（迟滞）。见 spinFacing 的说明 —— 等价于过零前后各一个小门限。
+  flipDead: 0.04,
   squashDepth: 0.14,   // 连续模式的压扁深度基准（实际深度 = squashDepth × strength）
   smoothFollow: 22,    // 连续模式下"跟随目标"的速度（越大越贴近波形、越小越软）
   manualImpulse: 0.02, // 连续模式下把手动冲量（kick）换算成额外位移的比例
@@ -93,6 +95,8 @@ export function createUnitEffect(target, options = {}) {
     alive: true,      // 死亡后停弹跳、继续自转
     pivotOffset: 0,   // 旋转支点相对脚底的向上偏移量（像素/世界单位）
     pivotReady: false,
+    facingBack: false,      // 当前是否已换成背面（带迟滞，避免在过零处抖动）
+    flipCount: 0,           // 换面次数（诊断用）
     baseRotation: 0,  // 目标对象原本的 rotation，自转叠加在它之上
     _baseCaptured: false,
   };
@@ -118,6 +122,7 @@ export function createUnitEffect(target, options = {}) {
   st.reset = () => {
     deform.squash = 0; deform.sv = 0;
     st.spin = 0;
+    st.facingBack = false;
     apply(st);
   };
 
@@ -185,6 +190,29 @@ export function createUnitEffect(target, options = {}) {
     ? hopFor(st.time, cfg.hopAmplitude, cfg.pulsesPerSecond) : 0);
   st.hopVelocity = () => (cfg.enabled && (st.alive || cfg.deadBounce)
     ? hopVelocityFor(st.time, cfg.hopAmplitude, cfg.pulsesPerSecond) : 0);
+
+  /**
+   * 当前应当使用哪一面 —— 由 `cos θ` 的**符号**决定（这正是"宽度过零"的数学形式：
+   * `width ∝ cos θ`），并带一个小死区做迟滞。
+   *
+   * 为什么需要迟滞：`cos θ` 在过零附近会反复变号，若每帧都按符号切换，就会在 90° 处
+   * **疯狂来回换模型**（每次换面都是重建骨架）。参考实现取 0.04 —— 小于一帧的 |Δcos|
+   * （默认周期下约 0.094），所以换面永远发生在过零后的第一帧，不会额外延后。
+   *
+   * @returns {'front'|'back'} 应当显示的一面
+   */
+  st.facingFor = () => {
+    if (!cfg.enabled || cfg.spinAxis !== 'vertical') return 'front';
+    const c = Math.cos(st.spin);
+    const dead = cfg.flipDead;
+    // 带迟滞：已经在背面时要 c > +dead 才回正面；在正面时要 c < -dead 才去背面
+    if (st.facingBack) { if (c > dead) st.facingBack = false; }
+    else if (c < -dead) { st.facingBack = true; }
+    return st.facingBack ? 'back' : 'front';
+  };
+
+  /** 供宿主调用：记录已经完成了一次换面（统计与调试）。 */
+  st.noteFlipped = () => { st.flipCount++; };
 
   st.state = st; // 便于调试与测试读取内部量
   return st;

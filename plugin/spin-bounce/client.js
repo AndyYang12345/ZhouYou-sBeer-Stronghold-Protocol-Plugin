@@ -185,6 +185,8 @@ const EFFECT_DEFAULTS = Object.freeze({
   //   false        —— 冲量式：每 1/pulsesPerSecond 秒踢一脚，靠欠阻尼弹簧回弹
   // 冲量式的起跳很陡，快速脉冲下会看出"一顿一顿"；连续式明显更顺，手感略软。
   spinSmooth: true,
+  // 正反面切换的死区（迟滞）。见 spinFacing 的说明 —— 等价于过零前后各一个小门限。
+  flipDead: 0.04,
   squashDepth: 0.14,   // 连续模式的压扁深度基准（实际深度 = squashDepth × strength）
   smoothFollow: 22,    // 连续模式下"跟随目标"的速度（越大越贴近波形、越小越软）
   manualImpulse: 0.02, // 连续模式下把手动冲量（kick）换算成额外位移的比例
@@ -229,6 +231,8 @@ function createUnitEffect(target, options = {}) {
     alive: true,      // 死亡后停弹跳、继续自转
     pivotOffset: 0,   // 旋转支点相对脚底的向上偏移量（像素/世界单位）
     pivotReady: false,
+    facingBack: false,      // 当前是否已换成背面（带迟滞，避免在过零处抖动）
+    flipCount: 0,           // 换面次数（诊断用）
     baseRotation: 0,  // 目标对象原本的 rotation，自转叠加在它之上
     _baseCaptured: false,
   };
@@ -254,6 +258,7 @@ function createUnitEffect(target, options = {}) {
   st.reset = () => {
     deform.squash = 0; deform.sv = 0;
     st.spin = 0;
+    st.facingBack = false;
     apply(st);
   };
 
@@ -321,6 +326,29 @@ function createUnitEffect(target, options = {}) {
     ? hopFor(st.time, cfg.hopAmplitude, cfg.pulsesPerSecond) : 0);
   st.hopVelocity = () => (cfg.enabled && (st.alive || cfg.deadBounce)
     ? hopVelocityFor(st.time, cfg.hopAmplitude, cfg.pulsesPerSecond) : 0);
+
+  /**
+   * 当前应当使用哪一面 —— 由 `cos θ` 的**符号**决定（这正是"宽度过零"的数学形式：
+   * `width ∝ cos θ`），并带一个小死区做迟滞。
+   *
+   * 为什么需要迟滞：`cos θ` 在过零附近会反复变号，若每帧都按符号切换，就会在 90° 处
+   * **疯狂来回换模型**（每次换面都是重建骨架）。参考实现取 0.04 —— 小于一帧的 |Δcos|
+   * （默认周期下约 0.094），所以换面永远发生在过零后的第一帧，不会额外延后。
+   *
+   * @returns {'front'|'back'} 应当显示的一面
+   */
+  st.facingFor = () => {
+    if (!cfg.enabled || cfg.spinAxis !== 'vertical') return 'front';
+    const c = Math.cos(st.spin);
+    const dead = cfg.flipDead;
+    // 带迟滞：已经在背面时要 c > +dead 才回正面；在正面时要 c < -dead 才去背面
+    if (st.facingBack) { if (c > dead) st.facingBack = false; }
+    else if (c < -dead) { st.facingBack = true; }
+    return st.facingBack ? 'back' : 'front';
+  };
+
+  /** 供宿主调用：记录已经完成了一次换面（统计与调试）。 */
+  st.noteFlipped = () => { st.flipCount++; };
 
   st.state = st; // 便于调试与测试读取内部量
   return st;
@@ -548,6 +576,111 @@ function driveUnit(view, fx, dt) {
   // 行进中的单位转得略快
   const moving = typeof view.speed === 'number' && view.speed > 0 ? 1.15 : 1;
   fx.update(dt, moving);
+
+  // 转身换面：横向压缩只是"看起来翻过来"，换成**真正的背面资产**才像在绕竖轴转。
+  //
+  // 死亡时**主动退回正面**：135 个背面骨架里只有 4 个自带 Die 剪辑，其余必须用正面播死亡，
+  // 否则会卡在背面没有死亡动画（宿主随后自己也会按 `_wantsBack()` 退回，但那时已经晚了一帧）。
+  if (dying) restoreFacing(view);
+  else applyFacing(view, fx);
+}
+
+// ---- 转身换面（正 / 背）--------------------------------------------------------
+//
+// 光靠"横向镜像"只能做出"翻过来"的观感；**换成真正的背面资产**才像在绕竖轴转。
+// 宿主提供了 `view.setDir(dir)`：原地换骨架（`_syncModel → _loadSpine → _acquireSpine`），
+// 中间不闪占位钻石（`public/js/render/units.js:1269`）。
+//
+// 这一节的判据与禁区照搬 CyanFish 的 CyanModPack（`dj-all/client/frontback.js`）——
+// 那是服主逐轮实测调过的定稿，它踩过的坑我不必再踩一遍。
+
+/** `shared/constants.js` —— 宿主 `_baseFromAnim()` 用的同一组常量。 */
+const ANIM_STUN = 5;
+/** UF.STUNNED | UF.FROZEN | UF.SLEEP —— 宿主把这三位等同成一个 'stun' 静息态。 */
+const UF_CONTROL = 2 | 4 | 256;
+
+/**
+ * 视图此刻处于**晕眩 / 冻结 / 沉睡**吗（逐字复刻宿主 `_baseFromAnim()` 的判据）。
+ *
+ * 为什么这三位要单独挡：宿主把它们等同成一个 `'stun'` 静息态，而那是**动画模式**
+ * （还可能冻住姿态）。此刻换模型 = 替宿主在强控中途 `_dropActor()` + 异步重建 SpineActor
+ * ⇒ 渲染丢失 / 只渲染一半。参考实现的服主实测过，所以**期间一个字节都不碰**。
+ */
+function isControlView(v) {
+  if (!v || typeof v !== 'object') return false;
+  if ((typeof v.anim === 'number' ? v.anim : 0) === ANIM_STUN) return true;
+  return ((typeof v.flags === 'number' ? v.flags : 0) & UF_CONTROL) !== 0;
+}
+
+/**
+ * 这个视图现在**能不能**换面（不能就一个字节都不写）。
+ *
+ * 禁区逐条：
+ *   · 已销毁 / 模型还没就绪 / 精灵还在加载中
+ *   · 倒地、死亡、淡出：135 个 Back 骨架里只有 4 个自带 Die 剪辑，其余必须退回 Front 播死亡
+ *     ⇒ 决定权完全留给宿主（它下一帧会自己按 `_wantsBack()` 退回正面）
+ *   · 强控（晕眩 / 冻结 / 沉睡）：见 isControlView
+ *   · 备战盘与预览栏（`view.prep`）：那里 `dir` 是玩家正在编辑的部署方向，宿主每次同步会重设
+ *   · 替身 / 形态（`view.form`）：形态切换有自己的模型逻辑
+ *   · 没有背面资产：用**宿主自己的判据** `ctx.assets.hasBack(id)`，绝不猜路径
+ *   · 敌人：`setDir` 对敌人本就是 no-op（宿主第一行就 return），这里也一并挡掉
+ */
+function canFlip(v) {
+  if (!v || v.destroyed || !v.actor || !v.spineReady) return false;
+  if (v.isEnemy || v.prep || v.form) return false;
+  if (v.dying === true || v.dead === true || v.alive === false) return false;
+  if (isControlView(v)) return false;
+  if (v._spineBusy) return false;              // 正在换骨架，别叠第二次
+  const assets = v.ctx && v.ctx.assets;
+  const id = v.info && (v.info.spine || v.info.defId);
+  if (!assets || typeof assets.hasBack !== 'function' || !id || !assets.hasBack(id)) return false;
+  return true;
+}
+
+/**
+ * 按特效的判定换到正面或背面。
+ *
+ * ★ `setDir()` 会顺手写 `dir` / `facing` / `visFacing` / `hasDir` —— 后三个是**朝向指示**
+ * （地面那个橙色 ›、阻挡标记画在哪侧），不是模型。所以调完要**逐值还原**，
+ * 否则玩家的朝向指示会被我们改掉。
+ *
+ * @returns {boolean} 是否真的换了
+ */
+function applyFacing(view, fx) {
+  if (!fx || typeof fx.facingFor !== 'function') return false;
+  const want = fx.facingFor();                 // 'front' | 'back'，带迟滞
+  const wantBack = want === 'back';
+  if (wantBack === (view._sbFacingBack === true)) return false;   // 已经是这一面
+  if (!canFlip(view)) return false;
+
+  // 记下会被 setDir 改写的朝向指示
+  const prev = { facing: view.facing, visFacing: view.visFacing, hasDir: view.hasDir };
+  try {
+    view.setDir(wantBack ? 'UP' : 'RIGHT');
+  } catch (err) {
+    console.warn('[spin-bounce] 换面失败（不影响游戏）', err);
+    return false;
+  }
+  // 逐值还原朝向指示：我们只换模型，不动朝向
+  if (prev.facing !== undefined) view.facing = prev.facing;
+  if (prev.visFacing !== undefined) view.visFacing = prev.visFacing;
+  if (prev.hasDir !== undefined) view.hasDir = prev.hasDir;
+
+  view._sbFacingBack = wantBack;
+  fx.noteFlipped();
+  return true;
+}
+
+/** 还原到正面（停用特效 / 离开对局时用）。 */
+function restoreFacing(view) {
+  if (!view || view.destroyed || view.isEnemy || !view.actor) return;
+  if (view._sbFacingBack !== true) return;
+  const prev = { facing: view.facing, visFacing: view.visFacing, hasDir: view.hasDir };
+  try { view.setDir('RIGHT'); } catch { /* ignore */ }
+  if (prev.facing !== undefined) view.facing = prev.facing;
+  if (prev.visFacing !== undefined) view.visFacing = prev.visFacing;
+  if (prev.hasDir !== undefined) view.hasDir = prev.hasDir;
+  view._sbFacingBack = false;
 }
 
 // ======== src/integrations/host.js ========
