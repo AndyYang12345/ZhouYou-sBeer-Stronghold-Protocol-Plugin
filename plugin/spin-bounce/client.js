@@ -1216,8 +1216,16 @@ function slider(doc, { min, max, step, value, format }, onInput) {
  * @param {(next:object)=>void} o.onChange
  */
 function attachSettingsPanel(o) {
-  const doc = o.doc ?? document;
+  // ★ 必须用 `typeof` 守卫：`o.doc ?? document` 里的 `document` 在无 DOM 环境（Node/测试）
+  //   是**未声明的标识符**，读取它就抛 ReferenceError —— `??` 只在左边是 null/undefined
+  //   时才求值右边，挡不住"右边本身不存在"。
+  const doc = o.doc ?? (typeof document !== 'undefined' ? document : null);
   const settings = o.settings;
+  // ★ 音乐控制器来自选项对象 `o.music`。曾经这里没有解构，函数体里却裸用了 `music`
+  //   （`music?.play?.()` 等 5 处）—— `music` 这个变量根本不存在，于是**每次碰音乐开关
+  //   都抛 `ReferenceError: music is not defined`**，表现为"音乐无法关闭"。
+  //   可选链 `?.` 挡不住未声明的变量：它只在"值为 null/undefined"时短路。
+  const music = o.music;
   if (!doc?.body) return null;
   ensureStyle(doc);
 
@@ -1251,7 +1259,9 @@ function attachSettingsPanel(o) {
     } catch { statusLine.textContent = ''; }
   };
   refreshStatus();
-  const statusTimer = setInterval(refreshStatus, 1000);
+  // 状态行轮询。可用 `o.statusIntervalMs = 0` 关掉（测试里必须关，否则定时器会让进程不退出）。
+  const statusMs = o.statusIntervalMs ?? 1000;
+  const statusTimer = statusMs > 0 ? setInterval(refreshStatus, statusMs) : 0;
   panel.appendChild(statusLine);
 
   const eff = toggle(doc, settings.effect.enabled, (v) => {
@@ -1372,7 +1382,7 @@ function attachSettingsPanel(o) {
   return {
     open,
     destroy() {
-      clearInterval(statusTimer);
+      if (statusTimer) clearInterval(statusTimer);
       doc.removeEventListener('pointerdown', onDocClick, true);
       doc.removeEventListener('keydown', onKey, true);
       panel.remove();
