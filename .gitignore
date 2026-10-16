@@ -1,0 +1,12 @@
+# 音乐/模型等第三方素材不入库（各自的授权不同，且体积大）
+audio/*
+!audio/README.md
+*.mp3
+*.ogg
+*.m4a
+*.glb
+
+node_modules/
+.cache/
+*.log
+.DS_Store

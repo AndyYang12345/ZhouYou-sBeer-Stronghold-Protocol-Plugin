@@ -1,0 +1,35 @@
+{
+  "name": "stronghold-spin-bounce",
+  "version": "0.1.0",
+  "description": "「粥友的酒」风格的单位弹跳自转特效 —— 为《卫戍协议：盟约》网页版制作，同时可作为独立的 2D 欠阻尼弹簧形变库使用",
+  "type": "module",
+  "license": "GPL-3.0-or-later",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": "./src/unit-effect.js",
+    "./physics": "./src/physics.js"
+  },
+  "scripts": {
+    "test": "node --test \"tests/*.test.js\"",
+    "patch:check": "bash tools/game-patch.sh check",
+    "patch:apply": "bash tools/game-patch.sh apply"
+  },
+  "keywords": [
+    "arknights",
+    "stronghold-protocol",
+    "spring",
+    "squash-and-stretch",
+    "pixi",
+    "game-mod"
+  ],
+  "files": [
+    "src/",
+    "audio/",
+    "integrations/",
+    "tools/",
+    "docs/"
+  ]
+}
