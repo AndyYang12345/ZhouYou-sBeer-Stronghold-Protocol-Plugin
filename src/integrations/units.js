@@ -172,8 +172,13 @@ export function canFlip(v) {
   if (v._spineBusy) return false;              // 正在换骨架，别叠第二次
   const assets = v.ctx && v.ctx.assets;
   const id = v.info && (v.info.spine || v.info.defId);
-  if (!assets || typeof assets.hasBack !== 'function' || !id || !assets.hasBack(id)) return false;
-  return true;
+  if (!assets || typeof assets.hasBack !== 'function' || !id) return false;
+  // hasBack 的结果在一个视图的生命周期里是稳定的（资产表不会中途变），
+  // 而它内部要走 `chars[id] || chars[baseCharId(id)]` 两次查找 —— 每帧每单位查一次纯属浪费。
+  if (v._sbHasBack === undefined) {
+    try { v._sbHasBack = assets.hasBack(id) === true; } catch { v._sbHasBack = false; }
+  }
+  return v._sbHasBack;
 }
 
 /**

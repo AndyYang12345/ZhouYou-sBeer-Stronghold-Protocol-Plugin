@@ -683,8 +683,13 @@ function canFlip(v) {
   if (v._spineBusy) return false;              // 正在换骨架，别叠第二次
   const assets = v.ctx && v.ctx.assets;
   const id = v.info && (v.info.spine || v.info.defId);
-  if (!assets || typeof assets.hasBack !== 'function' || !id || !assets.hasBack(id)) return false;
-  return true;
+  if (!assets || typeof assets.hasBack !== 'function' || !id) return false;
+  // hasBack 的结果在一个视图的生命周期里是稳定的（资产表不会中途变），
+  // 而它内部要走 `chars[id] || chars[baseCharId(id)]` 两次查找 —— 每帧每单位查一次纯属浪费。
+  if (v._sbHasBack === undefined) {
+    try { v._sbHasBack = assets.hasBack(id) === true; } catch { v._sbHasBack = false; }
+  }
+  return v._sbHasBack;
 }
 
 /**
@@ -1552,6 +1557,8 @@ const getStats = () => ({ ...stats });
 const ATTACH_BUDGET_PER_FRAME = 3;
 
 function tickEffects(storage, host) {
+  // ★ 关闭时**在解析宿主之前**就返回：原来看起来是"早退"，但仍会调用 resolveHost()
+  //   （每个帧循环一次属性链访问）。关掉开关就该是零成本。
   if (!storage.settings.effect.enabled) return 0;
   const h = host || resolveHost();
   if (!h) return 0;
@@ -1608,7 +1615,9 @@ function startFrameLoop(storage, getHost, env = {}) {
   const step = (dtSeconds) => {
     if (stopped) return;
     frameDt = Math.max(0, Math.min(dtSeconds, 0.25));
-    sharedPhase += frameDt;          // 全场唯一的弹跳时钟
+    // 全场唯一的弹跳时钟。加个上限：切后台回来或断点调试后的巨大 dt 会让相位瞬移，
+    // 表现为"回到页面时所有单位突然跳一下"。
+    sharedPhase += Math.min(frameDt, 0.25);
     const t0 = performance.now();
     try { tickEffects(storage, getHost()); } catch (err) { console.warn(`${LOG} 帧驱动出错`, err); }
     const cost = performance.now() - t0;

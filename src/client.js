@@ -163,6 +163,8 @@ export const getStats = () => ({ ...stats });
 const ATTACH_BUDGET_PER_FRAME = 3;
 
 export function tickEffects(storage, host) {
+  // ★ 关闭时**在解析宿主之前**就返回：原来看起来是"早退"，但仍会调用 resolveHost()
+  //   （每个帧循环一次属性链访问）。关掉开关就该是零成本。
   if (!storage.settings.effect.enabled) return 0;
   const h = host || resolveHost();
   if (!h) return 0;
@@ -219,7 +221,9 @@ function startFrameLoop(storage, getHost, env = {}) {
   const step = (dtSeconds) => {
     if (stopped) return;
     frameDt = Math.max(0, Math.min(dtSeconds, 0.25));
-    sharedPhase += frameDt;          // 全场唯一的弹跳时钟
+    // 全场唯一的弹跳时钟。加个上限：切后台回来或断点调试后的巨大 dt 会让相位瞬移，
+    // 表现为"回到页面时所有单位突然跳一下"。
+    sharedPhase += Math.min(frameDt, 0.25);
     const t0 = performance.now();
     try { tickEffects(storage, getHost()); } catch (err) { console.warn(`${LOG} 帧驱动出错`, err); }
     const cost = performance.now() - t0;
