@@ -106,11 +106,20 @@ function stepFixed(body, dt, strength = 1, fixedStep = FIXED_STEP) {
  * @param {number} squash
  * @returns {{x:number, y:number}} 建议施加到渲染对象上的缩放
  */
+/**
+ * 由形变量求缩放。**复用同一个对象**，不每帧分配。
+ *
+ * 为什么：这是每帧每单位调用一次的热路径。返回新对象看似无害，
+ * 但在 200Hz × 20 个单位下就是每秒 4000 个短命对象，直接推高 GC 压力
+ * （实测追踪里 GC 占了约 180ms）。调用方**必须立即读取 x/y**，不可保存引用。
+ */
+const SCALE_OUT = { x: 1, y: 1 };
 function scaleFor(squash) {
   const y = 1 + squash;
   // 极端值保护：y 趋近 0 时 1/sqrt(y) 会发散
-  const safe = Math.max(0.35, y);
-  return { x: 1 / Math.sqrt(safe), y };
+  SCALE_OUT.y = y;
+  SCALE_OUT.x = 1 / Math.sqrt(Math.max(0.35, y));
+  return SCALE_OUT;
 }
 
 /**
@@ -851,8 +860,9 @@ function kindOf(v) {
  * 收集当前所有可操作的单位视图。
  * @returns {Array<object>}
  */
-function collectUnits(host) {
-  const out = [];
+function collectUnits(host, out = []) {
+  // `out` 可传入以复用数组：这是每帧调用一次的热路径，不该每帧新建数组。
+  out.length = 0;
   eachView(host, (v) => {
     if (!hasBody(v) || !modelReady(v)) return;
     if (!looksLikeUnitView(v)) return;
@@ -1556,6 +1566,18 @@ const getStats = () => ({ ...stats });
  */
 const ATTACH_BUDGET_PER_FRAME = 3;
 
+/**
+ * 每帧最多**驱动**多少个单位（照抄参考实现的 `BUDGET = 400`）。
+ *
+ * 它的用意是"固定预算"：无论场上有多少单位，单帧的写入量都有上限，
+ * 于是特效永远不会成为掉帧的主因。我们的单位数远到不了 400，
+ * 因此这是一道**保险**而不是常态限制 —— 除非将来有人把单位数堆到几百。
+ */
+const UNIT_BUDGET_PER_FRAME = 400;
+
+/** 每帧复用的单位列表缓冲（避免每帧新建数组）。 */
+const unitScratch = [];
+
 function tickEffects(storage, host) {
   // ★ 关闭时**在解析宿主之前**就返回：原来看起来是"早退"，但仍会调用 resolveHost()
   //   （每个帧循环一次属性链访问）。关掉开关就该是零成本。
@@ -1563,10 +1585,11 @@ function tickEffects(storage, host) {
   const h = host || resolveHost();
   if (!h) return 0;
   const t0 = storage.debug ? performance.now() : 0;
-  const list = collectUnits(h);
+  const list = collectUnits(h, unitScratch);
   let attached = 0;
   let driven = 0;
   for (let i = 0; i < list.length; i++) {
+    if (driven + attached >= UNIT_BUDGET_PER_FRAME) break;   // 固定预算（不改数组长度，避免污染复用缓冲）
     const view = list[i];
     let fx = effects.get(view);
     if (!fx) {
@@ -1603,14 +1626,43 @@ const BUDGET_MS = 4;
 const BUDGET_STRIKES = 90;
 
 /**
+ * 挂到宿主 ticker 上的**优先级**。
+ *
+ * ★ 这是照抄参考实现（CyanFish CyanModPack, `dj-all/client/engine-pixi.js` 的 TICK_PRIORITY）。
+ * PIXI v7 的 ticker 按 priority **降序**执行，而宿主自己的帧回调在 NORMAL(0)、渲染在 LOW(-25)。
+ *
+ * 取 −20 的用意是拿到一个**确定的写入时机**：
+ *
+ *     宿主更新单位位置(0) → 我写入变换(−20) → 渲染(−25)
+ *
+ * 也就是说：写完之后**同一帧就会被渲染**，而且绝不和宿主抢同一层优先级。
+ * 早先用的是默认优先级 0（与宿主同级），顺序不确定 —— 可能先写后被宿主覆盖，
+ * 也可能写完等一帧才渲染。这类不确定性正是"时好时坏"的来源。
+ */
+const TICK_PRIORITY = -20;
+
+/**
  * 帧循环。优先挂到**宿主自己的 ticker**（`debug.app.ticker`）：不多开一条 rAF，
  * 且写入顺序可控（宿主渲染在 LOW(-25)，我们在它之前写）。拿不到 ticker 时退回自建 rAF。
+ */
+/**
+ * 帧循环。
+ *
+ * 驱动方式两级（与参考实现一致）：
+ *   1. 能拿到宿主 ticker ⇒ 用 `ticker.add(tick, null, TICK_PRIORITY)` 挂上去，
+ *      **并停掉自建的 rAF**（不再需要，也不再重复驱动）。
+ *   2. 拿不到 ⇒ 退回自建 rAF，并持续尝试接管。
+ *
+ * ★ 早先的实现有个错误：挂上 ticker 之后**自建的 rAF 仍在继续跑**（只是不调 step）。
+ *   虽然不重复执行逻辑，但每帧多一次回调、还多一次 getHost()，纯属白烧。
  */
 function startFrameLoop(storage, getHost, env = {}) {
   let stopped = false;
   let strikes = 0;
   let degraded = false;
-  let attached = null;
+  let attached = null;      // { ticker, onTick }
+  let rafId = 0;
+  let last = 0;
 
   const step = (dtSeconds) => {
     if (stopped) return;
@@ -1634,42 +1686,50 @@ function startFrameLoop(storage, getHost, env = {}) {
     }
   };
 
+  const raf = env.requestAnimationFrame ?? globalThis.requestAnimationFrame?.bind(globalThis);
+  const caf = env.cancelAnimationFrame ?? globalThis.cancelAnimationFrame?.bind(globalThis);
+
+  const stopRaf = () => { if (rafId && caf) { try { caf(rafId); } catch { /* ignore */ } } rafId = 0; };
   const detachFromHost = () => {
     if (!attached) return;
     try { attached.ticker.remove(attached.onTick); } catch { /* ignore */ }
     attached = null;
   };
+
+  /** 尝试改挂到宿主 ticker；成功则停掉自建 rAF。 */
   const attachToHost = () => {
     const h = getHost();
     const ticker = h && h.ticker;
-    if (!ticker || attached === ticker) return;
+    if (!ticker || (attached && attached.ticker === ticker)) return !!attached;
     detachFromHost();
     const onTick = () => {
       const d = ticker.deltaMS != null ? ticker.deltaMS / 1000 : (ticker.deltaTime || 1) / 60;
       step(d);
     };
-    ticker.add(onTick);
+    try {
+      ticker.add(onTick, null, TICK_PRIORITY);   // ★ 优先级 −20：写完就在同一帧被渲染
+    } catch (err) {
+      console.warn(`${LOG} 挂载宿主 ticker 失败（退回自建 rAF）`, err);
+      return false;
+    }
     attached = { ticker, onTick };
-    console.info(`${LOG} 已接管宿主 ticker 的帧回调`);
+    stopRaf();                                    // ★ 不再需要自建循环
+    console.info(`${LOG} 已接管宿主 ticker（优先级 ${TICK_PRIORITY}）`);
+    return true;
   };
 
-  const raf = env.requestAnimationFrame ?? globalThis.requestAnimationFrame?.bind(globalThis);
-  let last = 0;
   const loop = (now) => {
     if (stopped) return;
     if (!attached) {
-      attachToHost();                       // ticker 随对局视图来去匆匆，要反复尝试接管
-      if (!attached) {
-        const dt = last ? (now - last) / 1000 : 1 / 60;
-        step(dt);
-      }
+      const dt = last ? (now - last) / 1000 : 1 / 60;
+      step(dt);                                   // 兜底：还没接管时自己驱动
+      if (!attachToHost() && raf) rafId = raf(loop);
     }
     last = now;
-    if (raf) raf(loop);
   };
-  if (raf) raf(loop);
+  if (raf) rafId = raf(loop);
 
-  return () => { stopped = true; detachFromHost(); };
+  return () => { stopped = true; stopRaf(); detachFromHost(); };
 }
 
 // ---- 离开对局时复位 ----------------------------------------------------------

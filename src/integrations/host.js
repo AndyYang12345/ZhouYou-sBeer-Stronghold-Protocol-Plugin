@@ -112,8 +112,9 @@ export function kindOf(v) {
  * 收集当前所有可操作的单位视图。
  * @returns {Array<object>}
  */
-export function collectUnits(host) {
-  const out = [];
+export function collectUnits(host, out = []) {
+  // `out` 可传入以复用数组：这是每帧调用一次的热路径，不该每帧新建数组。
+  out.length = 0;
   eachView(host, (v) => {
     if (!hasBody(v) || !modelReady(v)) return;
     if (!looksLikeUnitView(v)) return;
