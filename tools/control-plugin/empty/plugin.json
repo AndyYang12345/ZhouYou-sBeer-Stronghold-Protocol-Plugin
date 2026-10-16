@@ -1,0 +1,11 @@
+{
+  "manifest": 2,
+  "id": "empty-control",
+  "name": "空白对照",
+  "version": "0.0.1",
+  "class": "trusted",
+  "scope": ["room", "server"],
+  "license": "GPL-3.0-or-later",
+  "app": ">=0.3.0 <0.4.0",
+  "api": 1
+}
