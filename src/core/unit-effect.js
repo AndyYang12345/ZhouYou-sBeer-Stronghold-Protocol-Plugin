@@ -32,6 +32,7 @@ export const EFFECT_DEFAULTS = Object.freeze({
   spinPeriod: 2.7,         // 自转一圈的秒数（参考实现默认 2.7）
   spinAxis: 'vertical',    // 'vertical' 竖轴（梗图效果）| 'screen' 屏幕平面内转
   spinSteps: SPIN_STEPS_PER_TURN, // 自转量化台阶（见 SPIN_STEPS_PER_TURN 的说明）
+  spinPivot: false,        // 是否把旋转支点移到身体中部（默认否，见 applyPivot 的两次踩坑记录）
   pulsesPerSecond: 2,      // 每秒挤压几次（参考实现是 2）
   hopAmplitude: 0.115,     // 离地弹跳幅度（模型高度归一化单位，1 ≈ 一个单位高）
   tiltFactor: 0.06,        // 压扁时的轻微侧倾，让它不那么"硬"
@@ -153,56 +154,20 @@ export function createUnitEffect(target, options = {}) {
 // ---- 内部：把状态写到显示对象上 ------------------------------------------------------------
 
 /**
- * 设定旋转支点。
+ * 写回阈值：数值变化小于它就**不写**。
  *
- * ★★ 这里踩过一个很显眼的坑：曾同时写 `pivot.y = +offset` 与 `position.y = -offset`，
- * 以为"两者抵消、视觉位置不变"。**错**，结果是**所有单位整体上浮半个身高**。
+ * ★★ 这是性能的关键，不是可选优化。PIXI 的变换有"脏"标记：一旦写入 scale / rotation，
+ * 该容器**及其整棵子树**（一个单位是 Spine 骨架，子节点上百）的 world transform 就会在
+ * 本次渲染里重算。无条件每帧写入 = 每帧重算所有单位的整棵子树 —— 单位一多就把主线程拖死，
+ * 实测会让游戏判定"插件卡死，由服务器接管本局"。
  *
- * 原因：PIXI 的语义是
- * ```
- * 屏幕位置 = position − pivot        （渲染时再叠加子树自己的局部坐标）
- * ```
- * `pivot` 把容器的原点**移到体内**，而 `position` 决定**那个新原点落在哪**。
- * 单位的 `body` 原本 `position = 0`、模型原点在脚底，也就是"脚底落在父坐标系原点"。
- * 要"绕身体中部转、但脚底不动"，唯一正确的做法是：
- *
- * ```
- * pivot.y = 半个身高      （原点从脚底移到中部）
- * position.y = 0         （中部依然落在父坐标系原点 —— 不动！）
- * ```
- *
- * 那时模型的脚底会落到 −half 处，由"中部在原点"等价换算出"脚底仍在原处"。
- * 再去动 `position` 就是把整体平移，必然浮空。
- */
-function applyPivot(st) {
-  const t = st.target;
-  if (!t) return;
-  if (t.pivot) { t.pivot.x = 0; t.pivot.y = st.pivotOffset; }
-  // ★ 绝不碰 position：body 原本就是 0，保持它才是"位置不变"。
-  st.pivotReady = true;
-}
-
-/**
- * 写回显示对象的阈值：小于这个变化就不写。
- *
- * **这是性能的关键，不是可选的优化。** PIXI 的变换有"脏"标记：一旦写入 scale / rotation，
- * 该容器（及其子树，一个单位是 spine 骨架，子节点上百）的 world transform 就会在本次渲染
- * 里重算。而单位的形变在静止段几乎是常量 —— 无条件每帧写入等于**每帧强制重算所有单位的
- * 整棵子树**，单位一多就把主线程拖死（实测会让游戏判定"插件卡死，由服务器接管本局"）。
- *
- * 加了阈值后，脉冲之间的绝大多数帧里数值没有可见变化，于是一个变换都不写，
- * PIXI 的缓存自然生效。
+ * 阈值定在**可见精度**而不是浮点噪声：实测弹簧收敛后的残余形变约 5e-4 量级，
+ * 而 0.1% 的缩放变化在任何分辨率下都看不出来 —— 所以阈值必须 ≥1e-3，
+ * 否则那点残余会让每帧照写不误（这正是第一次取 1e-4 时踩的坑）。
  */
 export const WRITE_EPSILON = 1e-3;
 
-/**
- * 是否差异小到不值得写回。
- *
- * 用**相对 + 绝对下限**而不是单一绝对值：形状是 `max(epsilon, epsilon·|当前值|)`。
- * 定这个阈值的依据是**可见精度**而不是浮点噪声 —— 0.1% 的缩放变化在任何分辨率下都看不出来，
- * 但它每帧写一次就足以让 PIXI 每帧重算整棵子树。实测弹簧收敛后的残余形变约 5e-4 量级，
- * 正好落在阈值以下（这就是这个阈值必须 ≥1e-3 的原因）。
- */
+/** 差异是否小到不值得写回。形状是 `max(epsilon, epsilon·|当前值|)`。 */
 function near(a, b) {
   const d = Math.abs(a - b);
   return d < WRITE_EPSILON || d < WRITE_EPSILON * Math.abs(a);
@@ -213,6 +178,44 @@ function writeTransform(t, sx, sy, rot) {
   if (!near(t.scale.x, sx)) t.scale.x = sx;
   if (!near(t.scale.y, sy)) t.scale.y = sy;
   if (!near(t.rotation, rot)) t.rotation = rot;
+}
+
+
+/**
+ * 旋转支点：**默认完全不动** `pivot` / `position`。
+ *
+ * ============================ 两次踩坑换来的结论 ============================
+ *
+ * 我曾两次试图"把支点移到身体中部，让它绕腰转"，两次都把单位搞浮空了：
+ *   第一次：pivot.y = +h/2 且 position.y = −h/2   → 浮空
+ *   第二次：只写 pivot.y = +h/2                    → 仍然浮空
+ * 两次都是我在纸面上推 PIXI 的变换语义，两次都推错。
+ *
+ * 而参考实现（CyanFish 的 CyanModPack，`dj-all/client/engine-pixi.js`）的逐字段表写得很清楚：
+ *
+ *     op / enemy / token   UnitView.body   scale free · rot free
+ *     device               box.mesh / gfx  …绕 v.screen 锚点     ← 只有它设 pivot
+ *
+ * 也就是说：**它压根不碰单位 body 的 pivot**。只有"几何已经画在屏幕绝对坐标里"的
+ * Graphics / Mesh（装置箱体、血条）才需要 `pivot` + `position` 那套补偿，而且它的写法是
+ * **两者设成同一个值**（`o.pivot.set(ax,ay); o.position.set(ax,ay)`），不是一正一负。
+ *
+ * 所以正确做法是：**只写 `body.scale` 与 `body.rotation`，什么都不动位置。**
+ * 旋转自然绕 body 自身的原点（脚底）—— 这正是它验证过的行为。
+ *
+ * 保留本函数是为了两件事：① 记录这个结论，避免第三次去改 pivot；
+ * ② 提供 `spinPivot` 选项给确实需要绕中点转的场合（默认关闭）。
+ */
+function applyPivot(st) {
+  const t = st.target;
+  if (!t || !st.cfg.spinPivot) { st.pivotReady = true; return; }
+  const y = st.pivotOffset;
+  if (t.pivot && t.position) {
+    // 只在显式开启时使用，且按参考实现的写法：pivot 与 position 设成同一个值。
+    t.pivot.set(0, y);
+    t.position.set(0, y);
+  }
+  st.pivotReady = true;
 }
 
 function apply(st) {

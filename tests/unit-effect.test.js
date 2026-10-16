@@ -9,12 +9,17 @@ import { createUnitEffect, EFFECT_DEFAULTS, WRITE_EPSILON } from '../src/core/un
 import { PIVOT_TRIES_MAX } from '../src/integrations/units.js';
 
 /** 最小的显示对象替身。 */
+/** 带 set() 的二维点，模拟 PIXI 的 ObservablePoint。 */
+function point(x = 0, y = 0) {
+  return { x, y, set(nx, ny) { this.x = nx; this.y = ny; } };
+}
+
 function fakeTarget() {
   return {
     scale: { x: 1, y: 1 },
     rotation: 0,
-    pivot: { x: 0, y: 0 },
-    position: { x: 0, y: 0 },
+    pivot: point(),
+    position: point(),
   };
 }
 
@@ -204,52 +209,54 @@ test('支点测量有重试上限（模型量不到时不做每帧无用功）',
     `重试上限应是个小整数，实际 ${PIVOT_TRIES_MAX}`);
 });
 
-// ---- 支点：设"绕体中转"绝不能移动单位 --------------------------------------------
-// 这一组守的是一个**很显眼的线上事故**：曾同时写 pivot.y = +half 与 position.y = -half，
-// 以为两者抵消，结果**所有单位整体上浮半个身高**（玩家一眼就看出来了）。
-//
-// 正确的语义是：
-//   屏幕位置 = position − pivot
-// 单位的 body 原本 position = 0（脚底落在父坐标系原点）。要让"绕体中转、脚底不动"，
-// 只能设 pivot.y = half，**position 必须保持 0**。再去动 position 就是把整体平移。
+// ---- 支点：默认绝不碰 pivot / position ----------------------------------------
+// 这一组守的是一个**两次复发的线上事故**：单位全部浮空。
+// 两次都是"把支点移到身体中部好让它绕腰转"这个自作聪明的念头造成的：
+//   第一次 pivot.y=+h/2 且 position.y=−h/2 → 浮空
+//   第二次 只写 pivot.y=+h/2               → 仍然浮空
+// 而参考实现（CyanFish CyanModPack 的 dj-all/client/engine-pixi.js）压根不碰单位 body
+// 的 pivot/position —— 它的逐字段表把 op/enemy/token 标为只写 scale 与 rotation。
+// 结论：**只写 scale 和 rotation**，位置一律不动。
 
-test('设支点不改变 position（脚底不能浮空）', () => {
+test('默认绝不碰 pivot / position（这是两次浮空事故的修复）', () => {
   const t = fakeTarget();
-  t.position.y = 0;
+  t.pivot.x = 3; t.pivot.y = 5;      // 假设宿主自己有值
+  t.position.x = 7; t.position.y = 11;
+  const fx = createUnitEffect(t);
+
+  fx.setModelHeight(64);             // 即使量到了高度……
+
+  assert.equal(t.pivot.x, 3, 'pivot 不该被改');
+  assert.equal(t.pivot.y, 5, '★ pivot 不该被改 —— 改了就会浮空');
+  assert.equal(t.position.x, 7, 'position 不该被改');
+  assert.equal(t.position.y, 11, '★ position 不该被改');
+});
+
+test('跑很多帧后 pivot / position 依然原封不动', () => {
+  const t = fakeTarget();
+  t.pivot.y = 5; t.position.y = 11;
   const fx = createUnitEffect(t);
   fx.setModelHeight(64);
-
-  assert.equal(t.pivot.y, 32, '支点应移到半个身高');
-  assert.equal(t.position.y, 0, '★ position 必须保持 0 —— 否则单位会浮空');
+  for (let i = 0; i < 240; i++) fx.update(1 / 60);
+  assert.equal(t.pivot.y, 5, '帧循环里也不能碰 pivot');
+  assert.equal(t.position.y, 11, '帧循环里也不能碰 position');
 });
 
-test('单位已有的 position 不会被设支点改写', () => {
-  const t = fakeTarget();
-  t.position.y = 7;          // 假设宿主给它设了非零偏移
-  const fx = createUnitEffect(t);
-  fx.setModelHeight(64);
-  assert.equal(t.position.y, 7, '不应擅自改动宿主的定位');
-});
-
-test('可见位置 = position − pivot 在设支点前后保持一致', () => {
-  // 这是本组的核心性质：设支点只改变"绕哪转"，不改变"看起来在哪"。
-  const before = fakeTarget();
-  before.position.y = 0;
-  const visibleBefore = before.position.y - before.pivot.y;   // 0 - 0 = 0
-
-  const fx = createUnitEffect(before);
-  fx.setModelHeight(80);
-  const visibleAfter = before.position.y - before.pivot.y;    // 0 - 40 = -40
-
-  // 脚底在模型局部坐标里的位置随之抬到 +40，两者相加回到 0 —— 也就是说"脚仍落在原处"。
-  const footLocal = 40;
-  assert.equal(visibleAfter + footLocal, visibleBefore, '脚底应仍在原处（可见位置不变）');
-});
-
-test('模型高度量不到时不设支点（保持原布局）', () => {
+test('模型高度量不到时也不做任何位置补偿', () => {
   const t = fakeTarget();
   const fx = createUnitEffect(t);
-  fx.setModelHeight(0);      // 量不到
+  fx.setModelHeight(0);
   assert.equal(t.pivot.y, 0);
-  assert.equal(fx.state.pivotReady, false, '没量到就不该认为支点已就绪');
+  assert.equal(t.position.y, 0);
+});
+
+test('只有显式开启 spinPivot 才走支点补偿（默认关闭）', () => {
+  assert.equal(EFFECT_DEFAULTS.spinPivot, false, '默认必须是关闭的');
+
+  const t = fakeTarget();
+  const fx = createUnitEffect(t, { spinPivot: true });
+  fx.setModelHeight(64);
+  // 开启时按参考实现的写法：pivot 与 position 设成**同一个值**（不是一正一负）
+  assert.equal(t.pivot.y, 32);
+  assert.equal(t.position.y, 32, '参考实现是两者同值，不是互为相反数');
 });
