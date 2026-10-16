@@ -147,12 +147,27 @@ function hopVelocityFor(phase, amplitude = 0.115, perSecond = 2) {
 //      也各自独立计相，互不干扰 —— 死亡时只停弹跳、继续旋转（见 `setAlive`）。
 //   4. **固定步长积分**：与帧率解耦。掉帧时多跑几步，而不是让弹簧变慢。
 
+/**
+ * 自转的量化台阶（每圈多少步）。
+ *
+ * **和写回阈值同等重要。** 自转是**连续量**：即使阈值挡住了微小的缩放抖动，`rotation`
+ * 每帧都在变，于是每帧仍要写一次 → PIXI 每帧重算该单位的整棵子树。量化成台阶后，
+ * 写入频率降为 `steps / spinPeriod` 次/秒（默认 24 步 / 2.7 秒 ≈ 8.9 次/秒，
+ * 而 60fps 是 60 次/秒 —— 降了约 7 倍）。
+ *
+ * 为什么敢量化：2D 贴图的自转本来就不是真正的立体旋转，而是"镜像 + 侧倾"的近似，
+ * 观感上本来就带台阶感；24 步/圈在人眼里仍是连续转动。
+ * 想要更顺滑可以调大（代价是写入更频繁），想要更省可以调小。
+ */
+const SPIN_STEPS_PER_TURN = 24;
+
 /** 默认参数。手感来自参考实现，自转周期也沿用它的 2.7 秒。 */
 const EFFECT_DEFAULTS = Object.freeze({
   enabled: true,
   strength: 1.15,          // Q弹强度倍数（参考实现默认 1.15）
   spinPeriod: 2.7,         // 自转一圈的秒数（参考实现默认 2.7）
   spinAxis: 'vertical',    // 'vertical' 竖轴（梗图效果）| 'screen' 屏幕平面内转
+  spinSteps: SPIN_STEPS_PER_TURN, // 自转量化台阶（见 SPIN_STEPS_PER_TURN 的说明）
   pulsesPerSecond: 2,      // 每秒挤压几次（参考实现是 2）
   hopAmplitude: 0.115,     // 离地弹跳幅度（模型高度归一化单位，1 ≈ 一个单位高）
   tiltFactor: 0.06,        // 压扁时的轻微侧倾，让它不那么"硬"
@@ -327,15 +342,19 @@ function apply(st) {
 
   const { x: sx, y: sy } = scaleFor(st.deform.squash);
 
+  // 自转量化：把连续角度吸附到台阶上。写入次数因此从"每帧"降到"每台阶一次"。
+  const steps = Math.max(4, Math.round(st.cfg.spinSteps ?? SPIN_STEPS_PER_TURN));
+  const q = Math.round(st.spin / (2 * Math.PI) * steps) / steps * 2 * Math.PI;
+
   if (st.cfg.spinAxis === 'screen') {
     // 屏幕平面内转：连挤压一起转，看起来像"躺倒着打转"
-    writeTransform(t, sx, sy, st.baseRotation + st.spin);
+    writeTransform(t, sx, sy, st.baseRotation + q);
   } else {
     // 竖轴自转：2D 贴图无法真正绕 Y 轴转，这里用"水平镜像 × 侧倾"近似 ——
     // 镜像让正反面交替出现，侧倾给一点透视暗示，合起来有"转过来"的读感。
-    const c = Math.cos(st.spin);
+    const c = Math.cos(q);
     writeTransform(t, sx * (c >= 0 ? 1 : -1), sy,
-      st.baseRotation + st.deform.squash * st.cfg.tiltFactor + Math.sin(st.spin) * 0.12);
+      st.baseRotation + st.deform.squash * st.cfg.tiltFactor + Math.sin(q) * 0.12);
   }
 }
 
@@ -637,9 +656,13 @@ const BUTTON_ID = 'sbp-button';
 const STYLE_ID = 'sbp-style';
 
 const CSS = `
-#${BUTTON_ID}{position:fixed;right:.5rem;bottom:.5rem;z-index:9998;width:.5rem;height:.5rem;border-radius:50%;
-  border:1px solid rgba(78,216,175,.5);background:rgba(16,20,18,.82);color:#4ed8af;font-size:.22rem;
-  line-height:1;cursor:pointer;display:grid;place-items:center;backdrop-filter:blur(3px);padding:0}
+#${BUTTON_ID}{position:fixed;right:.42rem;bottom:.42rem;z-index:9998;height:.42rem;min-width:.42rem;
+  padding:0 .14rem;border-radius:99px;border:1px solid rgba(78,216,175,.55);background:rgba(16,20,18,.88);
+  color:#4ed8af;font:600 12px/1 "Noto Sans SC",system-ui,sans-serif;cursor:pointer;
+  display:flex;align-items:center;gap:.06rem;backdrop-filter:blur(4px);
+  box-shadow:0 .04rem .16rem rgba(0,0,0,.45)}
+#${BUTTON_ID}::before{content:"弹";font-size:14px}
+#${BUTTON_ID} i{font-style:normal;opacity:.75;font-size:10px}
 #${BUTTON_ID}:hover{border-color:#4ed8af;background:rgba(16,20,18,.95)}
 #${PANEL_ID}{position:fixed;right:.5rem;bottom:1.15rem;z-index:9999;width:3.4rem;padding:.22rem .26rem;
   background:rgba(12,16,14,.96);border:1px solid #2f3a35;border-radius:.12rem;color:#c3cbc7;
@@ -723,7 +746,8 @@ function attachSettingsPanel(o) {
   // --- 入口按钮
   let button = doc.getElementById(BUTTON_ID);
   if (!button) {
-    button = el(doc, 'button', { id: BUTTON_ID, type: 'button', textContent: '弹', title: '弹跳自转设置' });
+    button = el(doc, 'button', { id: BUTTON_ID, type: 'button', title: '弹跳自转设置（点击展开）' });
+    button.appendChild(el(doc, 'i', { textContent: '设置' }));
     doc.body.appendChild(button);
   }
 
@@ -734,6 +758,23 @@ function attachSettingsPanel(o) {
   panel.hidden = true;
 
   panel.appendChild(el(doc, 'h3', { textContent: '弹跳自转' }));
+
+  // 状态行：让玩家一眼看出插件有没有在工作（而不是靠猜）
+  const statusLine = el(doc, 'p', { className: 'sbp-note', textContent: '状态：读取中…' });
+  const refreshStatus = () => {
+    if (typeof o.status !== 'function') { statusLine.textContent = ''; return; }
+    try {
+      const st = o.status() || {};
+      statusLine.textContent = st.degraded
+        ? '状态：已自动关闭（每帧耗时过高）'
+        : !st.hooked ? '状态：等待进入对局（渲染器未加载）'
+          : !st.layer ? '状态：已挂钩，等待单位'
+            : `状态：运行中 · ${st.units} 个单位`;
+    } catch { statusLine.textContent = ''; }
+  };
+  refreshStatus();
+  const statusTimer = setInterval(refreshStatus, 1000);
+  panel.appendChild(statusLine);
 
   const eff = toggle(doc, settings.effect.enabled, (v) => {
     settings.effect.enabled = v;
@@ -824,6 +865,7 @@ function attachSettingsPanel(o) {
   return {
     open,
     destroy() {
+      clearInterval(statusTimer);
       doc.removeEventListener('pointerdown', onDocClick, true);
       doc.removeEventListener('keydown', onKey, true);
       panel.remove();
@@ -1157,38 +1199,11 @@ function start(env = {}) {
   const settings = env.settings ?? readSettings(env.storage ?? globalThis.localStorage);
   const storage = { settings, debug: env.debug ?? debugOn(env.storage ?? globalThis.localStorage) };
 
-  // **PIXI 是进入对局时才按需加载的**（render/app.js: "PixiJS 7 (global PIXI) +
-  // pixi-spine, loaded on demand"）。而 trusted 插件在房间内容集就绪时就导入，
-  // 那时页面多半还停在大厅 —— 所以不能只查一次就放弃，必须等它出现。
-  const PIXI = env.PIXI ?? globalThis.PIXI;
-  if (!PIXI) console.info(`${LOG} 等待 PIXI（进入对局时才会加载）…`);
-  const discovery = installUnitDiscovery(PIXI);
-  if (!discovery) {
-    // 轮询等待；进入对局后游戏会注入 globalThis.PIXI
-    const timer = setInterval(() => {
-      const found = installUnitDiscovery(env.PIXI ?? globalThis.PIXI);
-      if (!found) return;
-      clearInterval(timer);
-      console.info(`${LOG} PIXI 已就绪，开始挂钩`);
-      wire(found);
-    }, 500);
-    started = { ok: true, deferred: true, stop() { clearInterval(timer); started = null; } };
-    return started;
-  }
-
-  function wire(disc) {
-    // 新单位出现时立刻建实例，避免第一帧没特效
-    disc.onUnit = (view) => {
-      if (!storage.settings.effect.enabled) return;
-      if (effects.has(view)) return;
-      const fx = attachEffect(view, storage.settings.effect);
-      if (fx) effects.set(view, fx);
-    };
-  }
-  wire(discovery);
-
-  const stopLoop = startFrameLoop(storage, env.requestAnimationFrame, storage);
-  const stopWatch = watchMatchState(storage, doc);
+  // ============================ 初始化顺序很重要 ============================
+  // 面板与音乐**必须先挂**，且绝不依赖 PIXI。
+  // 之前的版本把面板放在 PIXI 分支之后，而 PIXI 要等进入对局才加载 —— 一旦那条路
+  // 出问题（或只是还没进对局），玩家就**看不到任何开关**，连关掉它的入口都没有。
+  // 教训：安全开关必须比被它保护的功能更早、更可靠地存在。
 
   const music = createMusicController({
     settings: storage.settings.music,
@@ -1204,27 +1219,83 @@ function start(env = {}) {
     doc,
     settings: storage.settings,
     music,
+    storage: env.storage ?? globalThis.localStorage,
+    status: () => statusOf(storage),
     onChange: (next) => {
       storage.settings = next;
       writeSettings(next, env.storage ?? globalThis.localStorage);
       applyLiveSettings(storage);
     },
   });
+  console.info(`${LOG} 设置面板已挂载（右下角「弹」按钮）`);
 
-  console.info(`${LOG} v${PLUGIN_VERSION} 已启动（弹跳自转默认开启，音乐默认关闭）`);
+  // 对外的逃生舱：玩家/作者可在控制台直接开关，不必依赖界面
+  const api = {
+    version: PLUGIN_VERSION,
+    get settings() { return storage.settings; },
+    on() { storage.settings.effect.enabled = true; writeSettings(storage.settings); applyLiveSettings(storage); return 'effect on'; },
+    off() { storage.settings.effect.enabled = false; writeSettings(storage.settings); applyLiveSettings(storage); return 'effect off'; },
+    musicOn() { storage.settings.music.enabled = true; writeSettings(storage.settings); music.setEnabled(true); return music.play(); },
+    musicOff() { storage.settings.music.enabled = false; writeSettings(storage.settings); music.setEnabled(false); music.pause(); return 'music off'; },
+    stats: getStats,
+  };
+  globalThis.__SP_SPIN_BOUNCE__ = api;
+
+  // 帧循环**总是**启动：tickEffects 在找不到单位层时直接返回，所以等 PIXI 到位后
+  // 不需要重启循环，它会自然开始工作。
+  const stopLoop = startFrameLoop(storage, env.requestAnimationFrame);
+  const stopWatch = watchMatchState(storage, doc);
+
+  // PIXI 是进入对局时才按需加载的：这里只负责"等它并挂钩"，不再决定整个插件是否启动。
+  function wire(disc) {
+    disc.onUnit = (view) => {
+      if (!storage.settings.effect.enabled) return;
+      if (effects.has(view)) return;
+      const fx = attachEffect(view, storage.settings.effect);
+      if (fx) effects.set(view, fx);
+    };
+  }
+  let waitTimer = 0;
+  const initial = installUnitDiscovery(env.PIXI ?? globalThis.PIXI);
+  if (initial) {
+    wire(initial);
+  } else {
+    console.info(`${LOG} 等待 PIXI（进入对局时才会加载）…；设置面板已可用`);
+    waitTimer = setInterval(() => {
+      const found = installUnitDiscovery(env.PIXI ?? globalThis.PIXI);
+      if (!found) return;
+      clearInterval(waitTimer); waitTimer = 0;
+      console.info(`${LOG} PIXI 已就绪，开始挂钩`);
+      wire(found);
+    }, 500);
+  }
+
+  console.info(`${LOG} v${PLUGIN_VERSION} 已启动（弹跳自转${storage.settings.effect.enabled ? '开启' : '关闭'}，`
+    + `音乐${storage.settings.music.enabled ? '开启' : '关闭'}）`);
 
   started = {
     ok: true,
     get settings() { return storage.settings; },
-    music,
-    discovery,
-    stop() { stopLoop(); stopWatch(); panel?.destroy?.(); started = null; },
+    api, music, panel,
+    stop() {
+      if (waitTimer) clearInterval(waitTimer);
+      stopLoop(); stopWatch(); panel?.destroy?.();
+      started = null;
+    },
   };
   return started;
 }
 
-// trusted 插件：导入即生效。
-start();
+/** 面板上显示的状态行（让玩家一眼看出插件到底有没有在工作）。 */
+function statusOf(storage) {
+  const layer = layerRef();
+  return {
+    hooked: !!globalThis.PIXI?.Container?.prototype?.__sbPatched,
+    layer: !!layer,
+    units: layer ? layer.children.filter(looksLikeUnitView).length : 0,
+    degraded: storage.degraded === true,
+  };
+}
 
 // ======== 打包尾部：确保启动 ========
 if (typeof start === 'function') { try { start(); } catch (err) { console.warn('[spin-bounce] start() 失败', err); } }

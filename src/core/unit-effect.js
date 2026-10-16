@@ -11,12 +11,27 @@
 
 import { createDeformState, kick, stepFixed, scaleFor, hopFor, hopVelocityFor, FIXED_STEP } from './physics.js';
 
+/**
+ * 自转的量化台阶（每圈多少步）。
+ *
+ * **和写回阈值同等重要。** 自转是**连续量**：即使阈值挡住了微小的缩放抖动，`rotation`
+ * 每帧都在变，于是每帧仍要写一次 → PIXI 每帧重算该单位的整棵子树。量化成台阶后，
+ * 写入频率降为 `steps / spinPeriod` 次/秒（默认 24 步 / 2.7 秒 ≈ 8.9 次/秒，
+ * 而 60fps 是 60 次/秒 —— 降了约 7 倍）。
+ *
+ * 为什么敢量化：2D 贴图的自转本来就不是真正的立体旋转，而是"镜像 + 侧倾"的近似，
+ * 观感上本来就带台阶感；24 步/圈在人眼里仍是连续转动。
+ * 想要更顺滑可以调大（代价是写入更频繁），想要更省可以调小。
+ */
+export const SPIN_STEPS_PER_TURN = 24;
+
 /** 默认参数。手感来自参考实现，自转周期也沿用它的 2.7 秒。 */
 export const EFFECT_DEFAULTS = Object.freeze({
   enabled: true,
   strength: 1.15,          // Q弹强度倍数（参考实现默认 1.15）
   spinPeriod: 2.7,         // 自转一圈的秒数（参考实现默认 2.7）
   spinAxis: 'vertical',    // 'vertical' 竖轴（梗图效果）| 'screen' 屏幕平面内转
+  spinSteps: SPIN_STEPS_PER_TURN, // 自转量化台阶（见 SPIN_STEPS_PER_TURN 的说明）
   pulsesPerSecond: 2,      // 每秒挤压几次（参考实现是 2）
   hopAmplitude: 0.115,     // 离地弹跳幅度（模型高度归一化单位，1 ≈ 一个单位高）
   tiltFactor: 0.06,        // 压扁时的轻微侧倾，让它不那么"硬"
@@ -191,14 +206,18 @@ function apply(st) {
 
   const { x: sx, y: sy } = scaleFor(st.deform.squash);
 
+  // 自转量化：把连续角度吸附到台阶上。写入次数因此从"每帧"降到"每台阶一次"。
+  const steps = Math.max(4, Math.round(st.cfg.spinSteps ?? SPIN_STEPS_PER_TURN));
+  const q = Math.round(st.spin / (2 * Math.PI) * steps) / steps * 2 * Math.PI;
+
   if (st.cfg.spinAxis === 'screen') {
     // 屏幕平面内转：连挤压一起转，看起来像"躺倒着打转"
-    writeTransform(t, sx, sy, st.baseRotation + st.spin);
+    writeTransform(t, sx, sy, st.baseRotation + q);
   } else {
     // 竖轴自转：2D 贴图无法真正绕 Y 轴转，这里用"水平镜像 × 侧倾"近似 ——
     // 镜像让正反面交替出现，侧倾给一点透视暗示，合起来有"转过来"的读感。
-    const c = Math.cos(st.spin);
+    const c = Math.cos(q);
     writeTransform(t, sx * (c >= 0 ? 1 : -1), sy,
-      st.baseRotation + st.deform.squash * st.cfg.tiltFactor + Math.sin(st.spin) * 0.12);
+      st.baseRotation + st.deform.squash * st.cfg.tiltFactor + Math.sin(q) * 0.12);
   }
 }

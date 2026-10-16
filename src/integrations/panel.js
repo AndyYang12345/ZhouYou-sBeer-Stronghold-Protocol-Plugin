@@ -11,9 +11,13 @@ const BUTTON_ID = 'sbp-button';
 const STYLE_ID = 'sbp-style';
 
 const CSS = `
-#${BUTTON_ID}{position:fixed;right:.5rem;bottom:.5rem;z-index:9998;width:.5rem;height:.5rem;border-radius:50%;
-  border:1px solid rgba(78,216,175,.5);background:rgba(16,20,18,.82);color:#4ed8af;font-size:.22rem;
-  line-height:1;cursor:pointer;display:grid;place-items:center;backdrop-filter:blur(3px);padding:0}
+#${BUTTON_ID}{position:fixed;right:.42rem;bottom:.42rem;z-index:9998;height:.42rem;min-width:.42rem;
+  padding:0 .14rem;border-radius:99px;border:1px solid rgba(78,216,175,.55);background:rgba(16,20,18,.88);
+  color:#4ed8af;font:600 12px/1 "Noto Sans SC",system-ui,sans-serif;cursor:pointer;
+  display:flex;align-items:center;gap:.06rem;backdrop-filter:blur(4px);
+  box-shadow:0 .04rem .16rem rgba(0,0,0,.45)}
+#${BUTTON_ID}::before{content:"弹";font-size:14px}
+#${BUTTON_ID} i{font-style:normal;opacity:.75;font-size:10px}
 #${BUTTON_ID}:hover{border-color:#4ed8af;background:rgba(16,20,18,.95)}
 #${PANEL_ID}{position:fixed;right:.5rem;bottom:1.15rem;z-index:9999;width:3.4rem;padding:.22rem .26rem;
   background:rgba(12,16,14,.96);border:1px solid #2f3a35;border-radius:.12rem;color:#c3cbc7;
@@ -97,7 +101,8 @@ export function attachSettingsPanel(o) {
   // --- 入口按钮
   let button = doc.getElementById(BUTTON_ID);
   if (!button) {
-    button = el(doc, 'button', { id: BUTTON_ID, type: 'button', textContent: '弹', title: '弹跳自转设置' });
+    button = el(doc, 'button', { id: BUTTON_ID, type: 'button', title: '弹跳自转设置（点击展开）' });
+    button.appendChild(el(doc, 'i', { textContent: '设置' }));
     doc.body.appendChild(button);
   }
 
@@ -108,6 +113,23 @@ export function attachSettingsPanel(o) {
   panel.hidden = true;
 
   panel.appendChild(el(doc, 'h3', { textContent: '弹跳自转' }));
+
+  // 状态行：让玩家一眼看出插件有没有在工作（而不是靠猜）
+  const statusLine = el(doc, 'p', { className: 'sbp-note', textContent: '状态：读取中…' });
+  const refreshStatus = () => {
+    if (typeof o.status !== 'function') { statusLine.textContent = ''; return; }
+    try {
+      const st = o.status() || {};
+      statusLine.textContent = st.degraded
+        ? '状态：已自动关闭（每帧耗时过高）'
+        : !st.hooked ? '状态：等待进入对局（渲染器未加载）'
+          : !st.layer ? '状态：已挂钩，等待单位'
+            : `状态：运行中 · ${st.units} 个单位`;
+    } catch { statusLine.textContent = ''; }
+  };
+  refreshStatus();
+  const statusTimer = setInterval(refreshStatus, 1000);
+  panel.appendChild(statusLine);
 
   const eff = toggle(doc, settings.effect.enabled, (v) => {
     settings.effect.enabled = v;
@@ -198,6 +220,7 @@ export function attachSettingsPanel(o) {
   return {
     open,
     destroy() {
+      clearInterval(statusTimer);
       doc.removeEventListener('pointerdown', onDocClick, true);
       doc.removeEventListener('keydown', onKey, true);
       panel.remove();

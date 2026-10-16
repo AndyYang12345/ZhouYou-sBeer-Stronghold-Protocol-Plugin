@@ -325,38 +325,11 @@ export function start(env = {}) {
   const settings = env.settings ?? readSettings(env.storage ?? globalThis.localStorage);
   const storage = { settings, debug: env.debug ?? debugOn(env.storage ?? globalThis.localStorage) };
 
-  // **PIXI 是进入对局时才按需加载的**（render/app.js: "PixiJS 7 (global PIXI) +
-  // pixi-spine, loaded on demand"）。而 trusted 插件在房间内容集就绪时就导入，
-  // 那时页面多半还停在大厅 —— 所以不能只查一次就放弃，必须等它出现。
-  const PIXI = env.PIXI ?? globalThis.PIXI;
-  if (!PIXI) console.info(`${LOG} 等待 PIXI（进入对局时才会加载）…`);
-  const discovery = installUnitDiscovery(PIXI);
-  if (!discovery) {
-    // 轮询等待；进入对局后游戏会注入 globalThis.PIXI
-    const timer = setInterval(() => {
-      const found = installUnitDiscovery(env.PIXI ?? globalThis.PIXI);
-      if (!found) return;
-      clearInterval(timer);
-      console.info(`${LOG} PIXI 已就绪，开始挂钩`);
-      wire(found);
-    }, 500);
-    started = { ok: true, deferred: true, stop() { clearInterval(timer); started = null; } };
-    return started;
-  }
-
-  function wire(disc) {
-    // 新单位出现时立刻建实例，避免第一帧没特效
-    disc.onUnit = (view) => {
-      if (!storage.settings.effect.enabled) return;
-      if (effects.has(view)) return;
-      const fx = attachEffect(view, storage.settings.effect);
-      if (fx) effects.set(view, fx);
-    };
-  }
-  wire(discovery);
-
-  const stopLoop = startFrameLoop(storage, env.requestAnimationFrame, storage);
-  const stopWatch = watchMatchState(storage, doc);
+  // ============================ 初始化顺序很重要 ============================
+  // 面板与音乐**必须先挂**，且绝不依赖 PIXI。
+  // 之前的版本把面板放在 PIXI 分支之后，而 PIXI 要等进入对局才加载 —— 一旦那条路
+  // 出问题（或只是还没进对局），玩家就**看不到任何开关**，连关掉它的入口都没有。
+  // 教训：安全开关必须比被它保护的功能更早、更可靠地存在。
 
   const music = createMusicController({
     settings: storage.settings.music,
@@ -372,24 +345,80 @@ export function start(env = {}) {
     doc,
     settings: storage.settings,
     music,
+    storage: env.storage ?? globalThis.localStorage,
+    status: () => statusOf(storage),
     onChange: (next) => {
       storage.settings = next;
       writeSettings(next, env.storage ?? globalThis.localStorage);
       applyLiveSettings(storage);
     },
   });
+  console.info(`${LOG} 设置面板已挂载（右下角「弹」按钮）`);
 
-  console.info(`${LOG} v${PLUGIN_VERSION} 已启动（弹跳自转默认开启，音乐默认关闭）`);
+  // 对外的逃生舱：玩家/作者可在控制台直接开关，不必依赖界面
+  const api = {
+    version: PLUGIN_VERSION,
+    get settings() { return storage.settings; },
+    on() { storage.settings.effect.enabled = true; writeSettings(storage.settings); applyLiveSettings(storage); return 'effect on'; },
+    off() { storage.settings.effect.enabled = false; writeSettings(storage.settings); applyLiveSettings(storage); return 'effect off'; },
+    musicOn() { storage.settings.music.enabled = true; writeSettings(storage.settings); music.setEnabled(true); return music.play(); },
+    musicOff() { storage.settings.music.enabled = false; writeSettings(storage.settings); music.setEnabled(false); music.pause(); return 'music off'; },
+    stats: getStats,
+  };
+  globalThis.__SP_SPIN_BOUNCE__ = api;
+
+  // 帧循环**总是**启动：tickEffects 在找不到单位层时直接返回，所以等 PIXI 到位后
+  // 不需要重启循环，它会自然开始工作。
+  const stopLoop = startFrameLoop(storage, env.requestAnimationFrame);
+  const stopWatch = watchMatchState(storage, doc);
+
+  // PIXI 是进入对局时才按需加载的：这里只负责"等它并挂钩"，不再决定整个插件是否启动。
+  function wire(disc) {
+    disc.onUnit = (view) => {
+      if (!storage.settings.effect.enabled) return;
+      if (effects.has(view)) return;
+      const fx = attachEffect(view, storage.settings.effect);
+      if (fx) effects.set(view, fx);
+    };
+  }
+  let waitTimer = 0;
+  const initial = installUnitDiscovery(env.PIXI ?? globalThis.PIXI);
+  if (initial) {
+    wire(initial);
+  } else {
+    console.info(`${LOG} 等待 PIXI（进入对局时才会加载）…；设置面板已可用`);
+    waitTimer = setInterval(() => {
+      const found = installUnitDiscovery(env.PIXI ?? globalThis.PIXI);
+      if (!found) return;
+      clearInterval(waitTimer); waitTimer = 0;
+      console.info(`${LOG} PIXI 已就绪，开始挂钩`);
+      wire(found);
+    }, 500);
+  }
+
+  console.info(`${LOG} v${PLUGIN_VERSION} 已启动（弹跳自转${storage.settings.effect.enabled ? '开启' : '关闭'}，`
+    + `音乐${storage.settings.music.enabled ? '开启' : '关闭'}）`);
 
   started = {
     ok: true,
     get settings() { return storage.settings; },
-    music,
-    discovery,
-    stop() { stopLoop(); stopWatch(); panel?.destroy?.(); started = null; },
+    api, music, panel,
+    stop() {
+      if (waitTimer) clearInterval(waitTimer);
+      stopLoop(); stopWatch(); panel?.destroy?.();
+      started = null;
+    },
   };
   return started;
 }
 
-// trusted 插件：导入即生效。
-start();
+/** 面板上显示的状态行（让玩家一眼看出插件到底有没有在工作）。 */
+function statusOf(storage) {
+  const layer = layerRef();
+  return {
+    hooked: !!globalThis.PIXI?.Container?.prototype?.__sbPatched,
+    layer: !!layer,
+    units: layer ? layer.children.filter(looksLikeUnitView).length : 0,
+    degraded: storage.degraded === true,
+  };
+}
