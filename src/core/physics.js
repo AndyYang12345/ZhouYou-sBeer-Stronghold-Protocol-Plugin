@@ -23,7 +23,7 @@ export const SPRING_DEFAULTS = Object.freeze({
 /** 固定步长的默认值（秒）。参考实现用 1/120，与帧率解耦，保证手感一致。 */
 export const FIXED_STEP = 1 / 120;
 
-const num = (v, fallback) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
+const physNum = (v, fallback) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
 
 /**
  * 一个可被弹簧驱动的形变体。
@@ -37,14 +37,14 @@ export function createDeformState(overrides = {}) {
     squash: 0,
     sv: 0,
     opts: {
-      stiffness: num(o.stiffness, SPRING_DEFAULTS.stiffness),
-      damping: num(o.damping, SPRING_DEFAULTS.damping),
-      squashLimit: num(o.squashLimit, SPRING_DEFAULTS.squashLimit),
-      limitBias: num(o.limitBias, SPRING_DEFAULTS.limitBias),
-      maxLimit: num(o.maxLimit, SPRING_DEFAULTS.maxLimit),
-      kickScale: num(o.kickScale, SPRING_DEFAULTS.kickScale),
-      kickMax: num(o.kickMax, SPRING_DEFAULTS.kickMax),
-      bounce: num(o.bounce, SPRING_DEFAULTS.bounce),
+      stiffness: physNum(o.stiffness, SPRING_DEFAULTS.stiffness),
+      damping: physNum(o.damping, SPRING_DEFAULTS.damping),
+      squashLimit: physNum(o.squashLimit, SPRING_DEFAULTS.squashLimit),
+      limitBias: physNum(o.limitBias, SPRING_DEFAULTS.limitBias),
+      maxLimit: physNum(o.maxLimit, SPRING_DEFAULTS.maxLimit),
+      kickScale: physNum(o.kickScale, SPRING_DEFAULTS.kickScale),
+      kickMax: physNum(o.kickMax, SPRING_DEFAULTS.kickMax),
+      bounce: physNum(o.bounce, SPRING_DEFAULTS.bounce),
     },
   };
 }

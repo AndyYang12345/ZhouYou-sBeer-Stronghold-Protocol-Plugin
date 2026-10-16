@@ -53,7 +53,7 @@ export const AUDIO_DEFAULTS = Object.freeze({
   fadeMs: 600,        // 开/关时淡入淡出，避免"啪"地一声
 });
 
-const num = (v, f) => (typeof v === 'number' && Number.isFinite(v) ? v : f);
+const audNum = (v, f) => (typeof v === 'number' && Number.isFinite(v) ? v : f);
 
 /**
  * 创建音乐控制器。
@@ -98,7 +98,7 @@ export function createMusicController(opts = {}) {
       doc.body?.appendChild(el);
     }
     el.loop = cfg.loop !== false;
-    el.volume = num(cfg.volume, AUDIO_DEFAULTS.volume);
+    el.volume = audNum(cfg.volume, AUDIO_DEFAULTS.volume);
     state.el = el;
     state.ready = true;
     return el;
@@ -109,7 +109,7 @@ export function createMusicController(opts = {}) {
     const el = state.el;
     if (!el) return;
     const from = el.volume;
-    const dur = Math.max(0, num(ms, cfg.fadeMs));
+    const dur = Math.max(0, audNum(ms, cfg.fadeMs));
     if (dur === 0 || typeof requestAnimationFrame !== 'function') { el.volume = target; return; }
     const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     const step = () => {
@@ -135,7 +135,7 @@ export function createMusicController(opts = {}) {
       await el.play();
       state.playing = true;
       state.blocked = false;
-      fadeTo(num(cfg.volume, AUDIO_DEFAULTS.volume), cfg.fadeMs);
+      fadeTo(audNum(cfg.volume, AUDIO_DEFAULTS.volume), cfg.fadeMs);
       return true;
     } catch (err) {
       state.playing = false;
@@ -160,7 +160,7 @@ export function createMusicController(opts = {}) {
   };
 
   state.setVolume = (v) => {
-    cfg.volume = Math.max(0, Math.min(1, num(v, cfg.volume)));
+    cfg.volume = Math.max(0, Math.min(1, audNum(v, cfg.volume)));
     if (state.el && state.playing) state.el.volume = cfg.volume;
   };
 

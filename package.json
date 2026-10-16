@@ -10,12 +10,13 @@
   },
   "exports": {
     ".": "./src/unit-effect.js",
-    "./physics": "./src/physics.js"
+    "./physics": "./src/core/physics.js"
   },
   "scripts": {
     "test": "node --test \"tests/*.test.js\"",
     "patch:check": "bash tools/game-patch.sh check",
-    "patch:apply": "bash tools/game-patch.sh apply"
+    "patch:apply": "bash tools/game-patch.sh apply",
+    "build": "node tools/build-plugin.mjs"
   },
   "keywords": [
     "arknights",

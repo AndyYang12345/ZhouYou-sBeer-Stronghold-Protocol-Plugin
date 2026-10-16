@@ -25,7 +25,7 @@ export const EFFECT_DEFAULTS = Object.freeze({
   fixedStep: FIXED_STEP,
 });
 
-const num = (v, f) => (typeof v === 'number' && Number.isFinite(v) ? v : f);
+const fxNum = (v, f) => (typeof v === 'number' && Number.isFinite(v) ? v : f);
 
 /**
  * 创建一个作用在单个显示对象上的特效驱动。
@@ -39,11 +39,11 @@ export function createUnitEffect(target, options = {}) {
   for (const k of Object.keys(EFFECT_DEFAULTS)) {
     if (options[k] !== undefined) cfg[k] = options[k];
   }
-  cfg.strength = num(cfg.strength, EFFECT_DEFAULTS.strength);
-  cfg.spinPeriod = Math.max(0.05, num(cfg.spinPeriod, EFFECT_DEFAULTS.spinPeriod));
-  cfg.hopAmplitude = num(cfg.hopAmplitude, EFFECT_DEFAULTS.hopAmplitude);
-  cfg.tiltFactor = num(cfg.tiltFactor, EFFECT_DEFAULTS.tiltFactor);
-  cfg.pulsesPerSecond = Math.max(0.1, num(cfg.pulsesPerSecond, EFFECT_DEFAULTS.pulsesPerSecond));
+  cfg.strength = fxNum(cfg.strength, EFFECT_DEFAULTS.strength);
+  cfg.spinPeriod = Math.max(0.05, fxNum(cfg.spinPeriod, EFFECT_DEFAULTS.spinPeriod));
+  cfg.hopAmplitude = fxNum(cfg.hopAmplitude, EFFECT_DEFAULTS.hopAmplitude);
+  cfg.tiltFactor = fxNum(cfg.tiltFactor, EFFECT_DEFAULTS.tiltFactor);
+  cfg.pulsesPerSecond = Math.max(0.1, fxNum(cfg.pulsesPerSecond, EFFECT_DEFAULTS.pulsesPerSecond));
 
   const deform = createDeformState(options.spring || {});
 
@@ -66,14 +66,14 @@ export function createUnitEffect(target, options = {}) {
 
   /** 重新计算旋转支点：传入模型高度（脚底到头顶）。只做一次平移，之后位置保持不变。 */
   st.setModelHeight = (height) => {
-    const h = num(height, 0);
+    const h = fxNum(height, 0);
     if (!(h > 0)) return;
     // 支点取身体中部偏上一点：视觉上"腰"的位置比几何中点更像在原地转
     st.pivotOffset = h * 0.5;
     applyPivot(st);
   };
 
-  st.setSpinPeriod = (sec) => { cfg.spinPeriod = Math.max(0.05, num(sec, cfg.spinPeriod)); };
+  st.setSpinPeriod = (sec) => { cfg.spinPeriod = Math.max(0.05, fxNum(sec, cfg.spinPeriod)); };
 
   /** 手动踢一脚（点击、落地、碰撞时用）。 */
   st.kick = (impact = 1) => { kick(deform, cfg.strength, impact); };
@@ -92,7 +92,7 @@ export function createUnitEffect(target, options = {}) {
    */
   st.update = (dt, aliveScale = 1) => {
     if (!cfg.enabled) { st.reset(); return; }
-    const d = Math.max(0, Math.min(num(dt, 0), 0.25)); // 后台切回来时的巨大 dt 会炸弹簧
+    const d = Math.max(0, Math.min(fxNum(dt, 0), 0.25)); // 后台切回来时的巨大 dt 会炸弹簧
     if (d <= 0) return;
 
     st.time += d;
@@ -102,7 +102,7 @@ export function createUnitEffect(target, options = {}) {
       const scale = st.alive ? 1 : cfg.deadSpinScale;
       // 不把角度取模归一化：sin/cos 本来就不受大角度影响，而保留累加值能让
       // 调用方读到"一共转了多少"（调试、测试、以及将来接附属物摆动都用得上）。
-      st.spin += d * (2 * Math.PI / cfg.spinPeriod) * num(aliveScale, 1) * scale;
+      st.spin += d * (2 * Math.PI / cfg.spinPeriod) * fxNum(aliveScale, 1) * scale;
     }
 
     const bouncing = st.alive || cfg.deadBounce;
@@ -149,7 +149,7 @@ function applyPivot(st) {
 function apply(st) {
   const t = st.target;
   if (!t) return;
-  if (!st._baseCaptured) { st.baseRotation = num(t.rotation, 0); st._baseCaptured = true; }
+  if (!st._baseCaptured) { st.baseRotation = fxNum(t.rotation, 0); st._baseCaptured = true; }
 
   if (!st.cfg.enabled) {
     t.scale.x = 1; t.scale.y = 1;
