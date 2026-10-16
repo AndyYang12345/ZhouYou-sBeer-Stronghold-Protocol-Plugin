@@ -187,12 +187,17 @@ test('写回阈值生效：没有新激励时不写变换（PIXI 脏标记不被
   assert.ok(counter.rotation <= 2, `数值不变时不应写 rotation，实际 ${counter.rotation} 次 / 240 帧`);
 });
 
-test('确实需要变化时一定写（阈值没有把效果吃掉）', () => {
+test('自转必须可见：量化后仍有足够多的不同角度（同时不能退化成每帧写）', () => {
+  // 这一条同时守两侧：
+  //   * 下界 —— 量化不能把自转"吃掉"，2 秒内至少要有几十种角度，看起来才是连续转动；
+  //   * 上界 —— 不能退化成每帧都写（那正是拖死主线程的原因）。
+  // 默认 24 步/2.7 秒的量化在 2 秒内约产生 19 种角度（≈9.5 次/秒），远小于 120 帧。
   const t = fakeTarget();
   const fx = createUnitEffect(t, { spinAxis: 'screen', spinPeriod: 2 });
   const seen = new Set();
-  for (let i = 0; i < 120; i++) { fx.update(1 / 60); seen.add(t.rotation.toFixed(4)); }
-  assert.ok(seen.size > 20, `自转应产生足够多的不同角度，实际只有 ${seen.size} 种`);
+  for (let i = 0; i < 120; i++) { fx.update(1 / 60); seen.add(t.rotation.toFixed(6)); }
+  assert.ok(seen.size >= 12, `角度种类太少，自转会被看出来是卡顿的，实际 ${seen.size}`);
+  assert.ok(seen.size <= 60, `写得太频繁，量化没起作用，实际 ${seen.size} 种 / 120 帧`);
 });
 
 test('WRITE_EPSILON 很小，不会影响可见精度', () => {
