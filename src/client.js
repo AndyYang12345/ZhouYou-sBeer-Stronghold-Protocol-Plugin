@@ -16,6 +16,7 @@
 // 用宿主**自己暴露的调试抓手**（`globalThis.__SP_VIEW__.raw.debug`），不挂钩原型、不改任何文件。
 // 详见 integrations/host.js 抬头 —— 那里记录了"挂钩原型自己猜"那条路连踩的三个坑。
 
+import { EFFECT_DEFAULTS } from './core/unit-effect.js';
 import { attachEffect, driveUnit, optionsFor } from './integrations/units.js';
 import { resolveHost, collectUnits } from './integrations/host.js';
 import { createMusicController } from './integrations/audio.js';
@@ -28,20 +29,21 @@ const LOG = `[${PLUGIN_ID}]`;
 
 export const SETTINGS_KEY = 'sp.plugin.spinBounce.settings';
 
-/** 默认设置：特效**开启**、音乐**关闭**（浏览器会拦自动播放，也不该一进页面就吵）。 */
+/**
+ * 默认设置。
+ *
+ * ★ `effect` 这一组**直接复用 core 的 `EFFECT_DEFAULTS`**，不再各自维护一份副本。
+ *
+ * 为什么必须这样：这里曾经是一份独立抄写的副本，后来与 core 漂移了 —— 本对象缺少
+ * `spinWritesPerSec` / `spinSmooth` 等项，而 `mergeSettings` 只接受
+ * "默认值里已有的键" ⇒ 缺的那些**每次读回时都被静默丢弃**：
+ * 面板上把"自转顺滑度"拉高、刷新页面就回到默认，玩家会以为设置没生效。
+ * 两份默认值必须只有一个来源。
+ */
 export const DEFAULT_SETTINGS = Object.freeze({
-  effect: {
-    enabled: true,
-    strength: 1.15,
-    spinPeriod: 2.7,
-    pulsesPerSecond: 2,
-    hopAmplitude: 0.115,
-    spinAxis: 'vertical',   // 'vertical' 竖轴自转（梗图效果）| 'screen' 屏幕平面内转
-    deadSpinScale: 1,
-    deadBounce: false,
-  },
+  effect: EFFECT_DEFAULTS,
   music: {
-    enabled: false,
+    enabled: false,   // 浏览器会拦自动播放，也不该一进页面就吵
     volume: 0.55,
   },
 });

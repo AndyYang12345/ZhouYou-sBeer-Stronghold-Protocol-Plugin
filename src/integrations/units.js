@@ -108,8 +108,11 @@ export function driveUnit(view, fx, dt) {
   const dying = view.dying === true || view.dead === true;
   fx.setAlive(!dying);
 
-  // 行进中的单位转得略快
-  const moving = typeof view.speed === 'number' && view.speed > 0 ? 1.15 : 1;
+  // 行进中单位是否转得更快 —— **默认倍数 1（全场转速一致）**。
+  // 曾硬编码 1.15，导致场上"走着的比站着的快"，转起来参差、不整齐。
+  // 想要那种"行进更欢快"的效果可以把 movingSpeedScale 调大。
+  const mul = typeof fx.state.cfg.movingSpeedScale === 'number' ? fx.state.cfg.movingSpeedScale : 1;
+  const moving = mul !== 1 && typeof view.speed === 'number' && view.speed > 0 ? mul : 1;
   fx.update(dt, moving);
 
   // 转身换面：横向压缩只是"看起来翻过来"，换成**真正的背面资产**才像在绕竖轴转。

@@ -341,3 +341,60 @@ test('宽度不会因挤压而丢失符号（挤压与轴转可叠加）', () =>
   for (let i = 0; i < 10; i++) fx.update(1 / 60);
   assert.ok(t.scale.x < 0, `180° 时叠加挤压也应保持负号，实际 ${t.scale.x}`);
 });
+
+// ---- 整齐：横向只由角度决定，不被挤压污染 ------------------------------------------
+// 玩家反馈"能让旋转更整齐一点吗"。查证发现横向有**两个来源在相乘**：
+//   `sx * cos θ`，而 `sx = 1/√y` —— 等于把挤压的横向补偿又乘了一次
+//   （横向实际是 cos θ · 1.18），压缩被放大，且挤压的抖动直接叠在宽度上。
+// 轴转的横向应当只有**一个来源：角度**。挤压在轴转模式下只作用于纵向。
+
+test('★ 轴转模式下横向与挤压强度无关（只有一个来源：角度）', () => {
+  const widths = [];
+  for (const strength of [0.3, 1.15, 1.8]) {
+    const t = fakeTarget();
+    const fx = createUnitEffect(t, { spinAxis: 'vertical', spinPeriod: 100, strength });
+    fx.state.spin = Math.PI / 3;                 // 固定在同一角度
+    fx.update(1 / 600);                          // 极小步长，角度几乎不动
+    widths.push(t.scale.x);
+  }
+  const spread = Math.max(...widths) - Math.min(...widths);
+  assert.ok(spread < 0.02,
+    `横向不应随挤压强度变化（说明挤压污染了宽度），实际跨度 ${spread.toFixed(4)}`);
+});
+
+test('轴转模式下横向就是 cos θ（数值对齐）', () => {
+  for (const deg of [30, 60, 120, 150]) {
+    const t = fakeTarget();
+    const fx = createUnitEffect(t, { spinAxis: 'vertical', spinPeriod: 100, strength: 1.5 });
+    fx.state.spin = (deg * Math.PI) / 180;
+    fx.update(1 / 600);
+    const expected = Math.cos((deg * Math.PI) / 180);
+    assert.ok(Math.abs(t.scale.x - expected) < 0.03,
+      `${deg}° 横向应约为 ${expected.toFixed(3)}，实际 ${t.scale.x.toFixed(3)}`);
+  }
+});
+
+test('挤压在轴转模式下仍然作用于纵向（功能没丢）', () => {
+  const t = fakeTarget();
+  const fx = createUnitEffect(t, { spinAxis: 'vertical', spinPeriod: 100, strength: 1.5 });
+  const before = t.scale.y;
+  fx.state.spin = Math.PI / 3;
+  for (let i = 0; i < 20; i++) fx.update(1 / 60);
+  assert.notEqual(t.scale.y, before, '纵向应有挤压');
+});
+
+test('★ 平面内模式仍保留体积守恒（横向补偿还在，那是另一种效果）', () => {
+  const t = fakeTarget();
+  const fx = createUnitEffect(t, { spinAxis: 'screen', spinPeriod: 100, strength: 1.5 });
+  fx.state.spin = 0;
+  for (let i = 0; i < 20; i++) fx.update(1 / 60);
+  // 压扁时横向应 > 1（体积守恒）
+  if (t.scale.y < 0.999) assert.ok(t.scale.x > 1.0, '平面内模式下压扁应伴随横向变宽');
+});
+
+// ---- 整齐：全场转速一致 ----------------------------------------------------------
+
+test('★ movingSpeedScale 默认为 1（全场转速一致）', () => {
+  assert.equal(EFFECT_DEFAULTS.movingSpeedScale, 1,
+    '默认必须一致；曾经的硬编码 1.15 让"走着的比站着的快"，转起来参差');
+});

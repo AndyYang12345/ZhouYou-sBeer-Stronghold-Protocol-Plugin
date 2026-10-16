@@ -148,20 +148,6 @@ function hopVelocityFor(phase, amplitude = 0.115, perSecond = 2) {
 //   4. **固定步长积分**：与帧率解耦。掉帧时多跑几步，而不是让弹簧变慢。
 
 /**
- * 自转的量化台阶（每圈多少步）。
- *
- * **和写回阈值同等重要。** 自转是**连续量**：即使阈值挡住了微小的缩放抖动，`rotation`
- * 每帧都在变，于是每帧仍要写一次 → PIXI 每帧重算该单位的整棵子树。量化成台阶后，
- * 写入频率降为 `steps / spinPeriod` 次/秒（默认 24 步 / 2.7 秒 ≈ 8.9 次/秒，
- * 而 60fps 是 60 次/秒 —— 降了约 7 倍）。
- *
- * 为什么敢量化：2D 贴图的自转本来就不是真正的立体旋转，而是"镜像 + 侧倾"的近似，
- * 观感上本来就带台阶感；24 步/圈在人眼里仍是连续转动。
- * 想要更顺滑可以调大（代价是写入更频繁），想要更省可以调小。
- */
-const SPIN_STEPS_PER_TURN = 81;
-
-/**
  * 自转的**每秒写入次数**（顺滑度与性能的唯一权衡点）。
  *
  * 为什么不是"每圈固定台阶数"：每秒写入次数 = 台阶数 ÷ 周期，若固定台阶数，
@@ -179,7 +165,7 @@ const EFFECT_DEFAULTS = Object.freeze({
   strength: 1.15,          // Q弹强度倍数（参考实现默认 1.15）
   spinPeriod: 2.7,         // 自转一圈的秒数（参考实现默认 2.7）
   spinAxis: 'vertical',    // 'vertical' 竖轴（梗图效果）| 'screen' 屏幕平面内转
-  spinSteps: SPIN_STEPS_PER_TURN, // 自转量化台阶（见 SPIN_STEPS_PER_TURN 的说明）
+  spinWritesPerSec: SPIN_WRITES_PER_SEC, // 自转顺滑度：每秒写入次数（性能与观感的唯一权衡点）
   // 挤压的驱动方式：
   //   true（默认）—— **连续正弦驱动**：形变按平滑波形推，帧与帧之间没有台阶
   //   false        —— 冲量式：每 1/pulsesPerSecond 秒踢一脚，靠欠阻尼弹簧回弹
@@ -187,6 +173,9 @@ const EFFECT_DEFAULTS = Object.freeze({
   spinSmooth: true,
   // 正反面切换的死区（迟滞）。见 spinFacing 的说明 —— 等价于过零前后各一个小门限。
   flipDead: 0.04,
+  // 行进中单位的转速倍数。**默认 1 = 全场转速完全一致**（需求"让旋转更整齐"的关键之一）。
+  // 曾硬编码 1.15，导致场上"走着的比站着的快"，转起来参差。
+  movingSpeedScale: 1,
   squashDepth: 0.14,   // 连续模式的压扁深度基准（实际深度 = squashDepth × strength）
   smoothFollow: 22,    // 连续模式下"跟随目标"的速度（越大越贴近波形、越小越软）
   manualImpulse: 0.02, // 连续模式下把手动冲量（kick）换算成额外位移的比例
@@ -474,7 +463,13 @@ function apply(st) {
   // 过零附近把台阶跨过头（曾出现 90° 处写成 −0.037 而不是 0，宽度没有真正归零）。
   // 量化角度则天然保证 90° 落在台阶上，宽度能真正到 0。
   const a = Math.round(st.spin / (2 * Math.PI) * steps) / steps * 2 * Math.PI;
-  writeTransform(t, sx * Math.cos(a), sy, st.baseRotation);
+  //
+  // ★ 横向**只由 cos θ 决定**，不再乘挤压的 `sx`。
+  //   曾经写成 `sx * cos θ`：而 `sx = 1/√y`，等于把挤压的横向补偿又乘了一次
+  //   （横向实际变成 cos θ · 1.18），压缩被放大、且挤压的抖动直接叠在宽度上 ——
+  //   转起来就"不整齐"。轴转的横向应当只有一个来源：角度。
+  //   挤压在轴转模式下只作用于纵向（它本来就是"纵向压缩"，见"绕中轴旋转"的需求）。
+  writeTransform(t, Math.cos(a), sy, st.baseRotation);
 }
 
 // ======== src/integrations/units.js ========
@@ -586,8 +581,11 @@ function driveUnit(view, fx, dt) {
   const dying = view.dying === true || view.dead === true;
   fx.setAlive(!dying);
 
-  // 行进中的单位转得略快
-  const moving = typeof view.speed === 'number' && view.speed > 0 ? 1.15 : 1;
+  // 行进中单位是否转得更快 —— **默认倍数 1（全场转速一致）**。
+  // 曾硬编码 1.15，导致场上"走着的比站着的快"，转起来参差、不整齐。
+  // 想要那种"行进更欢快"的效果可以把 movingSpeedScale 调大。
+  const mul = typeof fx.state.cfg.movingSpeedScale === 'number' ? fx.state.cfg.movingSpeedScale : 1;
+  const moving = mul !== 1 && typeof view.speed === 'number' && view.speed > 0 ? mul : 1;
   fx.update(dt, moving);
 
   // 转身换面：横向压缩只是"看起来翻过来"，换成**真正的背面资产**才像在绕竖轴转。
@@ -1357,20 +1355,21 @@ const LOG = `[${PLUGIN_ID}]`;
 
 const SETTINGS_KEY = 'sp.plugin.spinBounce.settings';
 
-/** 默认设置：特效**开启**、音乐**关闭**（浏览器会拦自动播放，也不该一进页面就吵）。 */
+/**
+ * 默认设置。
+ *
+ * ★ `effect` 这一组**直接复用 core 的 `EFFECT_DEFAULTS`**，不再各自维护一份副本。
+ *
+ * 为什么必须这样：这里曾经是一份独立抄写的副本，后来与 core 漂移了 —— 本对象缺少
+ * `spinWritesPerSec` / `spinSmooth` 等项，而 `mergeSettings` 只接受
+ * "默认值里已有的键" ⇒ 缺的那些**每次读回时都被静默丢弃**：
+ * 面板上把"自转顺滑度"拉高、刷新页面就回到默认，玩家会以为设置没生效。
+ * 两份默认值必须只有一个来源。
+ */
 const DEFAULT_SETTINGS = Object.freeze({
-  effect: {
-    enabled: true,
-    strength: 1.15,
-    spinPeriod: 2.7,
-    pulsesPerSecond: 2,
-    hopAmplitude: 0.115,
-    spinAxis: 'vertical',   // 'vertical' 竖轴自转（梗图效果）| 'screen' 屏幕平面内转
-    deadSpinScale: 1,
-    deadBounce: false,
-  },
+  effect: EFFECT_DEFAULTS,
   music: {
-    enabled: false,
+    enabled: false,   // 浏览器会拦自动播放，也不该一进页面就吵
     volume: 0.55,
   },
 });

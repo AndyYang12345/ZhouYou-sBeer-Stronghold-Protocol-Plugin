@@ -12,20 +12,6 @@
 import { createDeformState, kick, stepFixed, scaleFor, hopFor, hopVelocityFor, FIXED_STEP } from './physics.js';
 
 /**
- * 自转的量化台阶（每圈多少步）。
- *
- * **和写回阈值同等重要。** 自转是**连续量**：即使阈值挡住了微小的缩放抖动，`rotation`
- * 每帧都在变，于是每帧仍要写一次 → PIXI 每帧重算该单位的整棵子树。量化成台阶后，
- * 写入频率降为 `steps / spinPeriod` 次/秒（默认 24 步 / 2.7 秒 ≈ 8.9 次/秒，
- * 而 60fps 是 60 次/秒 —— 降了约 7 倍）。
- *
- * 为什么敢量化：2D 贴图的自转本来就不是真正的立体旋转，而是"镜像 + 侧倾"的近似，
- * 观感上本来就带台阶感；24 步/圈在人眼里仍是连续转动。
- * 想要更顺滑可以调大（代价是写入更频繁），想要更省可以调小。
- */
-export const SPIN_STEPS_PER_TURN = 81;
-
-/**
  * 自转的**每秒写入次数**（顺滑度与性能的唯一权衡点）。
  *
  * 为什么不是"每圈固定台阶数"：每秒写入次数 = 台阶数 ÷ 周期，若固定台阶数，
@@ -43,7 +29,7 @@ export const EFFECT_DEFAULTS = Object.freeze({
   strength: 1.15,          // Q弹强度倍数（参考实现默认 1.15）
   spinPeriod: 2.7,         // 自转一圈的秒数（参考实现默认 2.7）
   spinAxis: 'vertical',    // 'vertical' 竖轴（梗图效果）| 'screen' 屏幕平面内转
-  spinSteps: SPIN_STEPS_PER_TURN, // 自转量化台阶（见 SPIN_STEPS_PER_TURN 的说明）
+  spinWritesPerSec: SPIN_WRITES_PER_SEC, // 自转顺滑度：每秒写入次数（性能与观感的唯一权衡点）
   // 挤压的驱动方式：
   //   true（默认）—— **连续正弦驱动**：形变按平滑波形推，帧与帧之间没有台阶
   //   false        —— 冲量式：每 1/pulsesPerSecond 秒踢一脚，靠欠阻尼弹簧回弹
@@ -51,6 +37,9 @@ export const EFFECT_DEFAULTS = Object.freeze({
   spinSmooth: true,
   // 正反面切换的死区（迟滞）。见 spinFacing 的说明 —— 等价于过零前后各一个小门限。
   flipDead: 0.04,
+  // 行进中单位的转速倍数。**默认 1 = 全场转速完全一致**（需求"让旋转更整齐"的关键之一）。
+  // 曾硬编码 1.15，导致场上"走着的比站着的快"，转起来参差。
+  movingSpeedScale: 1,
   squashDepth: 0.14,   // 连续模式的压扁深度基准（实际深度 = squashDepth × strength）
   smoothFollow: 22,    // 连续模式下"跟随目标"的速度（越大越贴近波形、越小越软）
   manualImpulse: 0.02, // 连续模式下把手动冲量（kick）换算成额外位移的比例
@@ -339,5 +328,11 @@ function apply(st) {
   // 过零附近把台阶跨过头（曾出现 90° 处写成 −0.037 而不是 0，宽度没有真正归零）。
   // 量化角度则天然保证 90° 落在台阶上，宽度能真正到 0。
   const a = Math.round(st.spin / (2 * Math.PI) * steps) / steps * 2 * Math.PI;
-  writeTransform(t, sx * Math.cos(a), sy, st.baseRotation);
+  //
+  // ★ 横向**只由 cos θ 决定**，不再乘挤压的 `sx`。
+  //   曾经写成 `sx * cos θ`：而 `sx = 1/√y`，等于把挤压的横向补偿又乘了一次
+  //   （横向实际变成 cos θ · 1.18），压缩被放大、且挤压的抖动直接叠在宽度上 ——
+  //   转起来就"不整齐"。轴转的横向应当只有一个来源：角度。
+  //   挤压在轴转模式下只作用于纵向（它本来就是"纵向压缩"，见"绕中轴旋转"的需求）。
+  writeTransform(t, Math.cos(a), sy, st.baseRotation);
 }
