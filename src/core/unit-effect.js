@@ -1,3 +1,8 @@
+// Copyright (C) 2026 Harekasa
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// 本文件以 GPL-3.0-or-later 发布（全文见仓库根的 LICENSE）。
+//
 // src/unit-effect.js — 把弹簧形变 + 自转 + 离地弹跳组合成一个"单位特效"。
 //
 // 设计要点

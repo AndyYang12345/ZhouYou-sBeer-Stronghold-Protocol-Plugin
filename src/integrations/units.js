@@ -1,3 +1,8 @@
+// Copyright (C) 2026 Harekasa
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// 本文件以 GPL-3.0-or-later 发布（全文见仓库根的 LICENSE）。
+//
 // plugin/spin-bounce/integrations/units.js — 把特效适配到游戏的 UnitView 上。
 //
 // 这一层是**唯一知道游戏内部结构**的地方：core/ 里的东西只认 `scale` / `rotation` / `pivot`，

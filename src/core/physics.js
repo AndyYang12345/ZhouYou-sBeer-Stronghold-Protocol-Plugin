@@ -1,3 +1,8 @@
+// Copyright (C) 2026 Harekasa
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// 本文件以 GPL-3.0-or-later 发布（全文见仓库根的 LICENSE）。
+//
 // src/physics.js — 欠阻尼弹簧：挤压 / 拉伸的手感来源。
 //
 // 从参考实现（博客的坐姿普瑞赛斯手办）移植并参数化：它已经在真机上验证过手感，

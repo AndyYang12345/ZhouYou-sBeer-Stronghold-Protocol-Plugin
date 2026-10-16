@@ -1,3 +1,8 @@
+// Copyright (C) 2026 Harekasa
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// 本文件以 GPL-3.0-or-later 发布（全文见仓库根的 LICENSE）。
+//
 // integrations/game-audio.js — 自定义音乐的播放控制。
 //
 // ============================ 为什么音乐不能走插件 ============================

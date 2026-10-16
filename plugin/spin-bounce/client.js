@@ -5,6 +5,21 @@
 
 
 // ======== src/core/dj.js ========
+// Copyright (C) 2026 Harekasa（本项目作者）
+// Copyright (C) 2026 CyanFish（本文件的数学移植自 Stronghold-Protocol-CyanModPack）
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// ============================ 来源与许可 ============================
+// 本文件的数学**逐行移植**自 CyanFish 的 Stronghold-Protocol-CyanModPack：
+//     mods/cyanfish.dj-all/client/config.js        （SQUASH_IN/OUT、squashProfile、DEFAULT_GLOBAL）
+//     mods/cyanfish.dj-all/client/engine-pixi.js   （frameFactors、MODE_FREE 写入语义）
+//     原始实现见 https://github.com/CyanF1sh/Stronghold-Protocol-CyanModPack
+// CyanModPack 以 GPL-3.0-or-later 发布（Copyright (C) 2026 CyanFish），与本项目同许可，
+// 因此可以合法移植；移植后同样以 GPL-3.0-or-later 发布。
+// 按 GPL-3.0 第 5 条，本文件已标明来源；**改动**只有：把 API 适配到本插件的结构
+// （入参改为秒 + 相位、输出对象可复用），数学本身未改动，并由 tests/dj.test.js 逐值对照。
+// 完整许可见仓库根的 LICENSE；第三方来源汇总见 NOTICE.md。
+//
 // src/core/dj.js — 压缩/旋转的**逐帧数学**，逐行移植自参考实现。
 //
 // 来源：CyanFish / Stronghold-Protocol-CyanModPack（GPL-3.0-or-later，与本项目同许可）
@@ -151,6 +166,11 @@ function djRestore(o, st) {
 }
 
 // ======== src/core/physics.js ========
+// Copyright (C) 2026 Harekasa
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// 本文件以 GPL-3.0-or-later 发布（全文见仓库根的 LICENSE）。
+//
 // src/physics.js — 欠阻尼弹簧：挤压 / 拉伸的手感来源。
 //
 // 从参考实现（博客的坐姿普瑞赛斯手办）移植并参数化：它已经在真机上验证过手感，
@@ -291,6 +311,11 @@ function hopVelocityFor(phase, amplitude = 0.115, perSecond = 2) {
 }
 
 // ======== src/core/unit-effect.js ========
+// Copyright (C) 2026 Harekasa
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// 本文件以 GPL-3.0-or-later 发布（全文见仓库根的 LICENSE）。
+//
 // src/unit-effect.js — 把弹簧形变 + 自转 + 离地弹跳组合成一个"单位特效"。
 //
 // 设计要点
@@ -676,6 +701,11 @@ function apply(st) {
 }
 
 // ======== src/integrations/units.js ========
+// Copyright (C) 2026 Harekasa
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// 本文件以 GPL-3.0-or-later 发布（全文见仓库根的 LICENSE）。
+//
 // plugin/spin-bounce/integrations/units.js — 把特效适配到游戏的 UnitView 上。
 //
 // 这一层是**唯一知道游戏内部结构**的地方：core/ 里的东西只认 `scale` / `rotation` / `pivot`，
@@ -1012,6 +1042,22 @@ function resetUnitDj(view) {
 // ======== src/integrations/host.js ========
 // src/integrations/host.js — 通过**宿主自己暴露的调试抓手**访问渲染层。
 //
+// Copyright (C) 2026 Harekasa（本项目作者）
+// Copyright (C) 2026 CyanFish（本文件移植自 Stronghold-Protocol-CyanModPack）
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// ============================ 来源与许可 ============================
+// 本文件的 `resolveHost` / `eachView` / `collectUnits` / `hasBody` / `modelReady` / `kindOf`
+// 移植自 CyanFish 的 Stronghold-Protocol-CyanModPack：
+//     mods/cyanfish.dj-all/client/engine-pixi.js
+//     原始实现见 https://github.com/CyanF1sh/Stronghold-Protocol-CyanModPack
+// CyanModPack 以 GPL-3.0-or-later 发布（Copyright (C) 2026 CyanFish），
+// 与本项目同许可，因此可以合法移植；移植后同样以 GPL-3.0-or-later 发布。
+// 按 GPL-3.0 第 5 条，本文件已标明来源与修改（改动写在下面各处的注释里）。
+// 完整许可见仓库根的 LICENSE；第三方来源汇总见 NOTICE.md。
+//
+// src/integrations/host.js — 通过**宿主自己暴露的调试抓手**访问渲染层。
+//
 // ============================ 为什么不用挂钩原型 ============================
 //
 // 我最初的实现是包装 `PIXI.Container.prototype.addChild`，从场景图里"猜"出哪个容器是单位。
@@ -1134,6 +1180,11 @@ function collectUnits(host, out = []) {
 }
 
 // ======== src/integrations/audio.js ========
+// Copyright (C) 2026 Harekasa
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// 本文件以 GPL-3.0-or-later 发布（全文见仓库根的 LICENSE）。
+//
 // integrations/game-audio.js — 自定义音乐的播放控制。
 //
 // ============================ 为什么音乐不能走插件 ============================
@@ -1398,6 +1449,11 @@ function createMusicController(opts = {}) {
 }
 
 // ======== src/integrations/panel.js ========
+// Copyright (C) 2026 Harekasa
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// 本文件以 GPL-3.0-or-later 发布（全文见仓库根的 LICENSE）。
+//
 // plugin/spin-bounce/integrations/panel.js — 插件自己的设置面板。
 //
 // 为什么不去改游戏的设置弹窗：那是 Preact 渲染的（`public/js/ui/settings.js` 的 `Modal`），
@@ -1670,6 +1726,18 @@ function attachSettingsPanel(o) {
 }
 
 // ======== src/client.js ========
+// src/client.js — 《卫戍协议：盟约》trusted 插件入口（「弹跳自转」）。
+//
+// Copyright (C) 2026 Harekasa（本项目作者）
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// 本文件以 GPL-3.0-or-later 发布（全文见仓库根的 LICENSE）。
+// 其中**帧驱动方式**（ticker 优先级、每帧写入预算、挂上后停掉自建 rAF）与
+// **渲染层抓手的用法**移植自 CyanFish 的 Stronghold-Protocol-CyanModPack
+// （mods/cyanfish.dj-all/client/engine-pixi.js，GPL-3.0-or-later，Copyright (C) 2026 CyanFish）：
+//     https://github.com/CyanF1sh/Stronghold-Protocol-CyanModPack
+// 第三方来源汇总见 NOTICE.md。
+//
 // src/client.js — 《卫戍协议：盟约》trusted 插件入口（「弹跳自转」）。
 //
 // ===================== 为什么这是 trusted 而不是 ui 插件 =====================

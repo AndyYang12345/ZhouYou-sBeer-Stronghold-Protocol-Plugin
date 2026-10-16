@@ -1,3 +1,18 @@
+// Copyright (C) 2026 Harekasa（本项目作者）
+// Copyright (C) 2026 CyanFish（本文件的数学移植自 Stronghold-Protocol-CyanModPack）
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// ============================ 来源与许可 ============================
+// 本文件的数学**逐行移植**自 CyanFish 的 Stronghold-Protocol-CyanModPack：
+//     mods/cyanfish.dj-all/client/config.js        （SQUASH_IN/OUT、squashProfile、DEFAULT_GLOBAL）
+//     mods/cyanfish.dj-all/client/engine-pixi.js   （frameFactors、MODE_FREE 写入语义）
+//     原始实现见 https://github.com/CyanF1sh/Stronghold-Protocol-CyanModPack
+// CyanModPack 以 GPL-3.0-or-later 发布（Copyright (C) 2026 CyanFish），与本项目同许可，
+// 因此可以合法移植；移植后同样以 GPL-3.0-or-later 发布。
+// 按 GPL-3.0 第 5 条，本文件已标明来源；**改动**只有：把 API 适配到本插件的结构
+// （入参改为秒 + 相位、输出对象可复用），数学本身未改动，并由 tests/dj.test.js 逐值对照。
+// 完整许可见仓库根的 LICENSE；第三方来源汇总见 NOTICE.md。
+//
 // src/core/dj.js — 压缩/旋转的**逐帧数学**，逐行移植自参考实现。
 //
 // 来源：CyanFish / Stronghold-Protocol-CyanModPack（GPL-3.0-or-later，与本项目同许可）

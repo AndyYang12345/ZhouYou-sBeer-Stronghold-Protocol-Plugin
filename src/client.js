@@ -1,5 +1,17 @@
 // src/client.js — 《卫戍协议：盟约》trusted 插件入口（「弹跳自转」）。
 //
+// Copyright (C) 2026 Harekasa（本项目作者）
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// 本文件以 GPL-3.0-or-later 发布（全文见仓库根的 LICENSE）。
+// 其中**帧驱动方式**（ticker 优先级、每帧写入预算、挂上后停掉自建 rAF）与
+// **渲染层抓手的用法**移植自 CyanFish 的 Stronghold-Protocol-CyanModPack
+// （mods/cyanfish.dj-all/client/engine-pixi.js，GPL-3.0-or-later，Copyright (C) 2026 CyanFish）：
+//     https://github.com/CyanF1sh/Stronghold-Protocol-CyanModPack
+// 第三方来源汇总见 NOTICE.md。
+//
+// src/client.js — 《卫戍协议：盟约》trusted 插件入口（「弹跳自转」）。
+//
 // ===================== 为什么这是 trusted 而不是 ui 插件 =====================
 //
 // 本插件要改变**单位容器的变换矩阵**，也就是要拿到每一帧的渲染对象。插件系统里只有

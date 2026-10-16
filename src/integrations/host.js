@@ -1,5 +1,21 @@
 // src/integrations/host.js — 通过**宿主自己暴露的调试抓手**访问渲染层。
 //
+// Copyright (C) 2026 Harekasa（本项目作者）
+// Copyright (C) 2026 CyanFish（本文件移植自 Stronghold-Protocol-CyanModPack）
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// ============================ 来源与许可 ============================
+// 本文件的 `resolveHost` / `eachView` / `collectUnits` / `hasBody` / `modelReady` / `kindOf`
+// 移植自 CyanFish 的 Stronghold-Protocol-CyanModPack：
+//     mods/cyanfish.dj-all/client/engine-pixi.js
+//     原始实现见 https://github.com/CyanF1sh/Stronghold-Protocol-CyanModPack
+// CyanModPack 以 GPL-3.0-or-later 发布（Copyright (C) 2026 CyanFish），
+// 与本项目同许可，因此可以合法移植；移植后同样以 GPL-3.0-or-later 发布。
+// 按 GPL-3.0 第 5 条，本文件已标明来源与修改（改动写在下面各处的注释里）。
+// 完整许可见仓库根的 LICENSE；第三方来源汇总见 NOTICE.md。
+//
+// src/integrations/host.js — 通过**宿主自己暴露的调试抓手**访问渲染层。
+//
 // ============================ 为什么不用挂钩原型 ============================
 //
 // 我最初的实现是包装 `PIXI.Container.prototype.addChild`，从场景图里"猜"出哪个容器是单位。
