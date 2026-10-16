@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import {
   SPRING_DEFAULTS, FIXED_STEP, createDeformState, springStep, kick,
   stepFixed, scaleFor, squashLimitOf, hopFor, hopVelocityFor,
-} from '../src/physics.js';
+} from '../plugin/spin-bounce/core/physics.js';
 
 const run = (state, seconds, strength = 1, step = FIXED_STEP) => {
   const steps = Math.round(seconds / step);

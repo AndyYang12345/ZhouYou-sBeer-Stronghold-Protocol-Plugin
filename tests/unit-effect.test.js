@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createUnitEffect, EFFECT_DEFAULTS } from '../src/unit-effect.js';
+import { createUnitEffect, EFFECT_DEFAULTS } from '../plugin/spin-bounce/core/unit-effect.js';
 
 /** 最小的显示对象替身。 */
 function fakeTarget() {
