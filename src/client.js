@@ -126,6 +126,17 @@ const effects = new WeakMap();
 /** 当前帧的 dt（秒），由帧循环写入。 */
 let frameDt = 1 / 60;
 
+/**
+ * **全场共享的弹跳时基**（秒）。
+ *
+ * 为什么需要它：每个 effect 自己的 `st.time` 是**从该单位被创建那一刻**起算的，
+ * 所以各单位的弹跳相位互不相同、整场是散开的（加上"每帧最多新接 3 个"的预算，
+ * 开始的时刻更是参差）。这里维护一个统一的时钟，所有单位都读它 ⇒ 严格同相。
+ *
+ * 只在帧循环里累加，且与 `frameDt` 同源，所以不会与渲染节奏漂移。
+ */
+let sharedPhase = 0;
+
 const stats = { ticks: 0, units: 0, ms: 0, at: 0, maxMs: 0, attached: 0 };
 export const getStats = () => ({ ...stats });
 
@@ -170,7 +181,7 @@ export function tickEffects(storage, host) {
       effects.set(view, fx);
       attached++;
     }
-    driveUnit(view, fx, frameDt);
+    driveUnit(view, fx, frameDt, sharedPhase);
     driven++;
   }
   if (storage.debug) {
@@ -208,6 +219,7 @@ function startFrameLoop(storage, getHost, env = {}) {
   const step = (dtSeconds) => {
     if (stopped) return;
     frameDt = Math.max(0, Math.min(dtSeconds, 0.25));
+    sharedPhase += frameDt;          // 全场唯一的弹跳时钟
     const t0 = performance.now();
     try { tickEffects(storage, getHost()); } catch (err) { console.warn(`${LOG} 帧驱动出错`, err); }
     const cost = performance.now() - t0;
@@ -307,6 +319,9 @@ export function applyLiveSettings(storage, host) {
       spinAxis: e.spinAxis,
       spinWritesPerSec: e.spinWritesPerSec,
       spinSmooth: e.spinSmooth,
+      syncBounce: e.syncBounce,
+      syncSpin: e.syncSpin,
+      movingSpeedScale: e.movingSpeedScale,
       hopAmplitude: e.hopAmplitude,
       pulsesPerSecond: e.pulsesPerSecond,
       deadSpinScale: e.deadSpinScale,

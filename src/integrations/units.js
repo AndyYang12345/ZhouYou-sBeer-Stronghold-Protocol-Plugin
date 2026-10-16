@@ -94,7 +94,7 @@ export function measureModelHeight(view) {
  */
 export const PIVOT_TRIES_MAX = 20;
 
-export function driveUnit(view, fx, dt) {
+export function driveUnit(view, fx, dt, sharedPhase = null) {
   // 模型可能刚加载完（之前量不到高度），重试若干次即可，不做无上限的每帧测量
   if (!fx.state.pivotReady) {
     fx.state.pivotTries = (fx.state.pivotTries || 0) + 1;
@@ -113,7 +113,7 @@ export function driveUnit(view, fx, dt) {
   // 想要那种"行进更欢快"的效果可以把 movingSpeedScale 调大。
   const mul = typeof fx.state.cfg.movingSpeedScale === 'number' ? fx.state.cfg.movingSpeedScale : 1;
   const moving = mul !== 1 && typeof view.speed === 'number' && view.speed > 0 ? mul : 1;
-  fx.update(dt, moving);
+  fx.update(dt, moving, sharedPhase);
 
   // 转身换面：横向压缩只是"看起来翻过来"，换成**真正的背面资产**才像在绕竖轴转。
   //

@@ -398,3 +398,107 @@ test('★ movingSpeedScale 默认为 1（全场转速一致）', () => {
   assert.equal(EFFECT_DEFAULTS.movingSpeedScale, 1,
     '默认必须一致；曾经的硬编码 1.15 让"走着的比站着的快"，转起来参差');
 });
+
+// ---- 全场同步弹跳 ----------------------------------------------------------------
+// 玩家反馈"弹跳并不整齐"。根因：每个 effect 的 `st.time` 是**从该单位被创建那一刻**
+// 起算的（再加上"每帧最多新接 3 个"的预算），所以各单位的相位互不相同、整场散开。
+// 修法：调用方维护一个共享时基，所有单位读它。
+//
+// 这一组的关键断言是**同相**：两个在不同时刻创建、被喂入不同 dt 序列的 effect，
+// 只要共享相位相同，压扁程度就必须完全一致。
+
+const mkTarget = () => ({
+  scale: { x: 1, y: 1 },
+  rotation: 0,
+  pivot: { x: 0, y: 0, set() {} },
+  position: { x: 0, y: 0, set() {} },
+});
+
+test('★ 共享相位相同 ⇒ 压扁程度完全相同（同步弹跳的核心性质）', () => {
+  const a = mkTarget();
+  const b = mkTarget();
+  const fa = createUnitEffect(a, { spinAxis: 'vertical', syncBounce: true, strength: 1.15 });
+  const fb = createUnitEffect(b, { spinAxis: 'vertical', syncBounce: true, strength: 1.15 });
+
+  // 故意让两者"历史"完全不同：先各跑一段不同长度的时间
+  for (let i = 0; i < 7; i++) fa.update(1 / 60, 1, 0.5);
+  for (let i = 0; i < 40; i++) fb.update(1 / 60, 1, 1.9);
+
+  // 现在给同一个共享相位，各推几帧
+  //
+  // 注意断言的口径：**不是"一帧内完全相等"**。弹簧跟随器本身有滞后，各单位进入
+  // 同步时的滞后状态不同，所以严格的性质是"喂入相同相位后**迅速收敛**"。
+  // 起初跟随速度只有 22（一帧收敛约 37%，要十几帧才齐），实测会带着残差晃；
+  // 同步模式下改用 syncFollow=60，约 2~3 帧收敛 —— 这才算"整场同步"。
+  const phase = 3.14159;
+  for (let i = 0; i < 5; i++) {
+    fa.update(1 / 60, 1, phase);
+    fb.update(1 / 60, 1, phase);
+  }
+
+  assert.ok(Math.abs(a.scale.y - b.scale.y) < 1e-3,
+    `同一共享相位下纵向应迅速收敛到一致，实际 ${a.scale.y} vs ${b.scale.y}`);
+  assert.ok(Math.abs(a.scale.x - b.scale.x) < 1e-3,
+    `同一共享相位下横向也应一致，实际 ${a.scale.x} vs ${b.scale.x}`);
+});
+
+test('★ 共享相位下的收敛足够快（3 帧内进入同一状态）', () => {
+  const a = mkTarget();
+  const b = mkTarget();
+  const fa = createUnitEffect(a, { spinAxis: 'vertical', syncBounce: true, strength: 1.15 });
+  const fb = createUnitEffect(b, { spinAxis: 'vertical', syncBounce: true, strength: 1.15 });
+  for (let i = 0; i < 11; i++) fa.update(1 / 60, 1, 0.4);
+  for (let i = 0; i < 47; i++) fb.update(1 / 60, 1, 2.9);
+
+  for (let i = 0; i < 3; i++) {           // 只推 3 帧
+    fa.update(1 / 60, 1, 1.234);
+    fb.update(1 / 60, 1, 1.234);
+  }
+  assert.ok(Math.abs(a.scale.y - b.scale.y) < 1e-2,
+    `3 帧内应收敛，实际差值 ${Math.abs(a.scale.y - b.scale.y).toFixed(5)}`);
+});
+
+test('关闭 syncBounce 时各单位各走各的（保留原来的自由相位）', () => {
+  const a = mkTarget();
+  const b = mkTarget();
+  const fa = createUnitEffect(a, { spinAxis: 'vertical', syncBounce: false, strength: 1.15 });
+  const fb = createUnitEffect(b, { spinAxis: 'vertical', syncBounce: false, strength: 1.15 });
+  for (let i = 0; i < 30; i++) fa.update(1 / 60, 1, 0);
+  for (let i = 0; i < 5; i++) fb.update(1 / 60, 1, 0);
+  fa.update(1 / 60, 1, 0);
+  fb.update(1 / 60, 1, 0);
+  assert.ok(Math.abs(a.scale.y - b.scale.y) > 1e-6,
+    '关闭同步时应各自计时（不应完全一致）');
+});
+
+test('共享相位也作用于跳跃（不只是压扁）', () => {
+  const a = mkTarget();
+  const b = mkTarget();
+  const fa = createUnitEffect(a, { spinAxis: 'vertical', syncBounce: true });
+  const fb = createUnitEffect(b, { spinAxis: 'vertical', syncBounce: true });
+  for (let i = 0; i < 9; i++) fa.update(1 / 60, 1, 0.3);
+  for (let i = 0; i < 33; i++) fb.update(1 / 60, 1, 2.2);
+  a.position.y = 0; b.position.y = 0;
+  const phase = 2.5;   // 取一个跳跃不为 0 的相位
+  fa.update(1 / 60, 1, phase);
+  fb.update(1 / 60, 1, phase);
+  assert.ok(Math.abs(a.position.y - b.position.y) < 1e-9,
+    `跳跃也应同相，实际 ${a.position.y} vs ${b.position.y}`);
+});
+
+test('没给共享相位时退回各自的 st.time（向后兼容）', () => {
+  const a = mkTarget();
+  const fa = createUnitEffect(a, { spinAxis: 'vertical', syncBounce: true });
+  assert.doesNotThrow(() => { for (let i = 0; i < 10; i++) fa.update(1 / 60); });
+  assert.ok(Number.isFinite(a.scale.y), '没有共享相位也应正常推进');
+});
+
+test('共享相位为 NaN / undefined 时安静退回各自计时（不产生 NaN）', () => {
+  for (const bad of [NaN, undefined, null, 'x']) {
+    const t = mkTarget();
+    const fx = createUnitEffect(t, { spinAxis: 'vertical', syncBounce: true });
+    for (let i = 0; i < 20; i++) fx.update(1 / 60, 1, bad);
+    assert.ok(Number.isFinite(t.scale.y), `坏相位 ${String(bad)} 不应产生 NaN，实际 ${t.scale.y}`);
+    assert.ok(Number.isFinite(t.scale.x), `坏相位 ${String(bad)} 不应产生 NaN（横向）`);
+  }
+});

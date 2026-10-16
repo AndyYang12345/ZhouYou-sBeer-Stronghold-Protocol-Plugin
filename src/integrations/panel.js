@@ -199,6 +199,20 @@ export function attachSettingsPanel(o) {
   contRow.appendChild(continuous.node);
   sub.appendChild(contRow);
 
+  const syncB = toggle(doc, settings.effect.syncBounce, (v) => {
+    settings.effect.syncBounce = v; o.onChange?.(settings);
+  });
+  const syncBRow = row(doc, '整齐弹跳', '全场单位同步起伏；关闭则各自计时、错落一些');
+  syncBRow.appendChild(syncB.node);
+  sub.appendChild(syncBRow);
+
+  const syncS = toggle(doc, settings.effect.syncSpin, (v) => {
+    settings.effect.syncSpin = v; o.onChange?.(settings);
+  });
+  const syncSRow = row(doc, '整齐自转', '全场单位角度一致；关闭则各自起算，方向感更随机');
+  syncSRow.appendChild(syncS.node);
+  sub.appendChild(syncSRow);
+
   const axisRow = row(doc, '自转方式', '竖轴=梗图效果；平面=躺倒打转');
   const axis = el(doc, 'select');
   for (const [v, label] of [['vertical', '竖轴'], ['screen', '平面']]) {

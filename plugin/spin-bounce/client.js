@@ -176,6 +176,24 @@ const EFFECT_DEFAULTS = Object.freeze({
   // 行进中单位的转速倍数。**默认 1 = 全场转速完全一致**（需求"让旋转更整齐"的关键之一）。
   // 曾硬编码 1.15，导致场上"走着的比站着的快"，转起来参差。
   movingSpeedScale: 1,
+  // **全场同步弹跳**：所有单位读同一个时基，因而压扁/回弹/跳跃完全同相。
+  //
+  // 为什么需要这个开关：默认每个单位的相位是**各自从自己被创建那一刻**起算的
+  // （`st.time` 是 effect 自己的计时器），再加上"每帧最多新接 3 个"的预算，
+  // 各单位开始的时刻都不同 ⇒ 整场是散开的。
+  // 打开后改用调用方给的共享相位，全场严格同相。
+  syncBounce: true,
+  // 同步模式下的"跟随目标"速度。比自由模式（smoothFollow=22）快得多，因为
+  // **光共享相位不够**：弹簧跟随器自身有滞后，各单位进入同步时滞后状态不同，
+  // 若跟随太慢就会带着各自的残差晃几秒（实测 22 时一帧只收敛约 37%，要十几帧才齐）。
+  // 60 时约 2~3 帧收敛 —— 人眼察觉不到，而"整场同步"变成一个近乎严格的性质。
+  syncFollow: 60,
+  // **全场同步自转**：自转角度也由共享相位推导，而不是各单位各自累加。
+  //
+  // 为什么连自转也要同步：`st.spin += d·ω` 是**各自的累加器**，各单位创建时刻不同
+  // （还有"每帧最多新接 3 个"的预算），于是旋转角度全部错开 —— 即使弹跳同相，
+  // 横向 `cos(spin)` 依旧各不相同，整场看起来还是散的。
+  syncSpin: true,
   squashDepth: 0.14,   // 连续模式的压扁深度基准（实际深度 = squashDepth × strength）
   smoothFollow: 22,    // 连续模式下"跟随目标"的速度（越大越贴近波形、越小越软）
   manualImpulse: 0.02, // 连续模式下把手动冲量（kick）换算成额外位移的比例
@@ -220,6 +238,7 @@ function createUnitEffect(target, options = {}) {
     alive: true,      // 死亡后停弹跳、继续自转
     pivotOffset: 0,   // 旋转支点相对脚底的向上偏移量（像素/世界单位）
     pivotReady: false,
+    spinOrigin: 0,          // 同步自转的起始角（保持各单位一致）
     facingBack: false,      // 当前是否已换成背面（带迟滞，避免在过零处抖动）
     flipCount: 0,           // 换面次数（诊断用）
     baseRotation: 0,  // 目标对象原本的 rotation，自转叠加在它之上
@@ -246,7 +265,7 @@ function createUnitEffect(target, options = {}) {
   /** 立刻回到静止姿态（切换开关、单位回收时用）。 */
   st.reset = () => {
     deform.squash = 0; deform.sv = 0;
-    st.spin = 0;
+    st.spin = st.spinOrigin;
     st.facingBack = false;
     apply(st);
   };
@@ -256,19 +275,36 @@ function createUnitEffect(target, options = {}) {
    * @param {number} dt 距上一帧的秒数
    * @param {number} [aliveScale] 存活时的速度倍数（可用于"行进中更欢快"之类）
    */
-  st.update = (dt, aliveScale = 1) => {
+  st.update = (dt, aliveScale = 1, sharedPhase = null) => {
     if (!cfg.enabled) { st.reset(); return; }
     const d = Math.max(0, Math.min(fxNum(dt, 0), 0.25)); // 后台切回来时的巨大 dt 会炸弹簧
     if (d <= 0) return;
 
     st.time += d;
 
+    // 弹跳相位：同步模式下用调用方给的**共享时基**（全场同相），否则用各自的 st.time。
+    // 注意共享时基也要参与"每帧只推进一步"，所以它是**外部算好的相位值**，不在这里累加。
+    const phase = (cfg.syncBounce && typeof sharedPhase === 'number' && Number.isFinite(sharedPhase))
+      ? sharedPhase : st.time;
+
+    const spinPhase = (cfg.syncSpin && typeof sharedPhase === 'number' && Number.isFinite(sharedPhase))
+      ? sharedPhase : null;
+
     const spinning = cfg.spinPeriod > 0;
     if (spinning) {
       const scale = st.alive ? 1 : cfg.deadSpinScale;
-      // 不把角度取模归一化：sin/cos 本来就不受大角度影响，而保留累加值能让
-      // 调用方读到"一共转了多少"（调试、测试、以及将来接附属物摆动都用得上）。
-      st.spin += d * (2 * Math.PI / cfg.spinPeriod) * fxNum(aliveScale, 1) * scale;
+      if (spinPhase !== null) {
+        // 同步自转：角度由**共享相位**推导，而不是各自累加。
+        // 死亡后仍继续转（`scale` 只改速率），但我们不再允许"死亡时刻不同导致相位跳变"——
+        // 所以死亡时改用等比缩放而不是重新起算：旋转仍与全场同相。
+        st.spin = st.spinOrigin
+          + spinPhase * (2 * Math.PI / cfg.spinPeriod) * fxNum(aliveScale, 1) * scale;
+      } else {
+        // 自由自转（syncSpin 关闭）：各自累加。
+        // 不把角度取模归一化：sin/cos 本来就不受大角度影响，而保留累加值能让
+        // 调用方读到"一共转了多少"（调试、测试、以及将来接附属物摆动都用得上）。
+        st.spin += d * (2 * Math.PI / cfg.spinPeriod) * fxNum(aliveScale, 1) * scale;
+      }
     }
 
     const bouncing = st.alive || cfg.deadBounce;
@@ -282,17 +318,20 @@ function createUnitEffect(target, options = {}) {
         // 现在把剩余速度叠加到目标上，让它自然衰减，手动冲量仍然看得见。
         const omega = 2 * Math.PI * cfg.pulsesPerSecond;
         // 深度乘上 strength，"Q弹强度"滑杆在连续模式下才有效（否则它形同虚设）
-        const wave = -cfg.squashDepth * cfg.strength * (1 - Math.cos(st.time * omega)) / 2;
+        const wave = -cfg.squashDepth * cfg.strength * (1 - Math.cos(phase * omega)) / 2;
         const manual = deform.sv * cfg.manualImpulse;   // 把残余速度换算成一点额外位移
         const target = wave + manual;
-        deform.squash += (target - deform.squash) * Math.min(1, d * cfg.smoothFollow);
+        // 同步模式下用更快的跟随：把各单位的滞后状态尽快拉到同一个值
+        const follow = cfg.syncBounce && typeof sharedPhase === 'number' && Number.isFinite(sharedPhase)
+          ? cfg.syncFollow : cfg.smoothFollow;
+        deform.squash += (target - deform.squash) * Math.min(1, d * follow);
         // 手动冲量按弹簧自身的阻尼衰减（★ 阻尼在 `deform.opts` 里，不在 `cfg` 上 ——
         // 早先写成 `cfg.damping` 得到 undefined，一步就把 sv 变成 NaN，整支 effect 全废）
         deform.sv -= deform.opts.damping * deform.sv * d;
         if (Math.abs(deform.sv) < 1e-4) deform.sv = 0;
       } else {
         // 冲量式：每 1/pulsesPerSecond 秒踢一脚，靠欠阻尼弹簧过冲回弹（原实现）
-        const idx = Math.floor(st.time * cfg.pulsesPerSecond);
+        const idx = Math.floor(phase * cfg.pulsesPerSecond);
         if (idx !== st.pulse) {
           st.pulse = idx;
           kick(deform, cfg.strength);
@@ -312,9 +351,9 @@ function createUnitEffect(target, options = {}) {
 
   /** 当前离地高度（供宿主决定要不要同步影子等）。 */
   st.hop = () => (cfg.enabled && (st.alive || cfg.deadBounce)
-    ? hopFor(st.time, cfg.hopAmplitude, cfg.pulsesPerSecond) : 0);
+    ? hopFor(phase, cfg.hopAmplitude, cfg.pulsesPerSecond) : 0);
   st.hopVelocity = () => (cfg.enabled && (st.alive || cfg.deadBounce)
-    ? hopVelocityFor(st.time, cfg.hopAmplitude, cfg.pulsesPerSecond) : 0);
+    ? hopVelocityFor(phase, cfg.hopAmplitude, cfg.pulsesPerSecond) : 0);
 
   /**
    * 当前应当使用哪一面 —— 由 `cos θ` 的**符号**决定（这正是"宽度过零"的数学形式：
@@ -567,7 +606,7 @@ function measureModelHeight(view) {
  */
 const PIVOT_TRIES_MAX = 20;
 
-function driveUnit(view, fx, dt) {
+function driveUnit(view, fx, dt, sharedPhase = null) {
   // 模型可能刚加载完（之前量不到高度），重试若干次即可，不做无上限的每帧测量
   if (!fx.state.pivotReady) {
     fx.state.pivotTries = (fx.state.pivotTries || 0) + 1;
@@ -586,7 +625,7 @@ function driveUnit(view, fx, dt) {
   // 想要那种"行进更欢快"的效果可以把 movingSpeedScale 调大。
   const mul = typeof fx.state.cfg.movingSpeedScale === 'number' ? fx.state.cfg.movingSpeedScale : 1;
   const moving = mul !== 1 && typeof view.speed === 'number' && view.speed > 0 ? mul : 1;
-  fx.update(dt, moving);
+  fx.update(dt, moving, sharedPhase);
 
   // 转身换面：横向压缩只是"看起来翻过来"，换成**真正的背面资产**才像在绕竖轴转。
   //
@@ -1283,6 +1322,20 @@ function attachSettingsPanel(o) {
   contRow.appendChild(continuous.node);
   sub.appendChild(contRow);
 
+  const syncB = toggle(doc, settings.effect.syncBounce, (v) => {
+    settings.effect.syncBounce = v; o.onChange?.(settings);
+  });
+  const syncBRow = row(doc, '整齐弹跳', '全场单位同步起伏；关闭则各自计时、错落一些');
+  syncBRow.appendChild(syncB.node);
+  sub.appendChild(syncBRow);
+
+  const syncS = toggle(doc, settings.effect.syncSpin, (v) => {
+    settings.effect.syncSpin = v; o.onChange?.(settings);
+  });
+  const syncSRow = row(doc, '整齐自转', '全场单位角度一致；关闭则各自起算，方向感更随机');
+  syncSRow.appendChild(syncS.node);
+  sub.appendChild(syncSRow);
+
   const axisRow = row(doc, '自转方式', '竖轴=梗图效果；平面=躺倒打转');
   const axis = el(doc, 'select');
   for (const [v, label] of [['vertical', '竖轴'], ['screen', '平面']]) {
@@ -1452,6 +1505,17 @@ const effects = new WeakMap();
 /** 当前帧的 dt（秒），由帧循环写入。 */
 let frameDt = 1 / 60;
 
+/**
+ * **全场共享的弹跳时基**（秒）。
+ *
+ * 为什么需要它：每个 effect 自己的 `st.time` 是**从该单位被创建那一刻**起算的，
+ * 所以各单位的弹跳相位互不相同、整场是散开的（加上"每帧最多新接 3 个"的预算，
+ * 开始的时刻更是参差）。这里维护一个统一的时钟，所有单位都读它 ⇒ 严格同相。
+ *
+ * 只在帧循环里累加，且与 `frameDt` 同源，所以不会与渲染节奏漂移。
+ */
+let sharedPhase = 0;
+
 const stats = { ticks: 0, units: 0, ms: 0, at: 0, maxMs: 0, attached: 0 };
 const getStats = () => ({ ...stats });
 
@@ -1496,7 +1560,7 @@ function tickEffects(storage, host) {
       effects.set(view, fx);
       attached++;
     }
-    driveUnit(view, fx, frameDt);
+    driveUnit(view, fx, frameDt, sharedPhase);
     driven++;
   }
   if (storage.debug) {
@@ -1534,6 +1598,7 @@ function startFrameLoop(storage, getHost, env = {}) {
   const step = (dtSeconds) => {
     if (stopped) return;
     frameDt = Math.max(0, Math.min(dtSeconds, 0.25));
+    sharedPhase += frameDt;          // 全场唯一的弹跳时钟
     const t0 = performance.now();
     try { tickEffects(storage, getHost()); } catch (err) { console.warn(`${LOG} 帧驱动出错`, err); }
     const cost = performance.now() - t0;
@@ -1633,6 +1698,9 @@ function applyLiveSettings(storage, host) {
       spinAxis: e.spinAxis,
       spinWritesPerSec: e.spinWritesPerSec,
       spinSmooth: e.spinSmooth,
+      syncBounce: e.syncBounce,
+      syncSpin: e.syncSpin,
+      movingSpeedScale: e.movingSpeedScale,
       hopAmplitude: e.hopAmplitude,
       pulsesPerSecond: e.pulsesPerSecond,
       deadSpinScale: e.deadSpinScale,
