@@ -32,7 +32,9 @@ import { createUnitEffect } from '../core/unit-effect.js';
 export function looksLikeUnitView(obj) {
   if (!obj || typeof obj !== 'object') return false;
   const body = obj.body;
-  if (!body || !Array.isArray(body.children)) return false;
+  if (!body) return false;
+  // 不要求 body.children 是数组，也不要求 hud 存在：
+  // 这两个字段的创建时机都比"body 被挂上"更晚，要求它们会把单位漏掉。
   return !!body.scale && typeof body.scale === 'object';
 }
 

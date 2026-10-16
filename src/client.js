@@ -131,27 +131,64 @@ export function writeSettings(s, storage = globalThis.localStorage) {
 export function installUnitDiscovery(PIXI = globalThis.PIXI) {
   const proto = PIXI?.Container?.prototype;
   if (!proto) return null;
+
+  // 幂等：原型只包装一次；重复调用共享同一份 onUnit 槽位。
   if (proto.__sbPatched) return proto.__sbState;
 
   const state = {
     unitsLayer: null,
-    onUnit: null,          // 发现新单位时的回调
+    onUnit: null,          // 发现新单位时的回调（可随时替换）
+    debug: false,
+    seenAdds: 0,
   };
+
+  /**
+   * 从任意节点向上找到"带 body 的最近祖先" —— 那就是 UnitView。
+   *
+   * 为什么要向上找，而不是直接判断被加入的节点：
+   * UnitView 的构造顺序决定了**没有任何一次 addChild 的参数是 view 自己**：
+   *
+   * ```
+   * 719  layers.shadow.addChild(this.shadow)   ← this.body 还不存在
+   * 723  layers.units.addChild(this.root)      ← 此刻 view.body 仍是 undefined
+   * 734  this.body = new P.Container()
+   * 735  this.root.addChild(this.body)         ← 只有这里，child.parent.parent 才是 view
+   * 752  layers.bars.addChild(this.hud)
+   * ```
+   *
+   * 所以正确做法是：在 735 行这一类"把身体挂到 root 下"的时刻，从 `child.parent`
+   * 往上找到 view。这个判定不依赖 hud/root 的创建顺序，比逐个字段试探稳得多。
+   */
+  function viewOf(child) {
+    let n = child?.parent;
+    for (let i = 0; i < 3 && n; i++) {
+      // **权威标志：`body.parent` 就是 UnitView 本身。**
+      //
+      // 为什么不用"带 body 的祖先"：UnitView 把 root 当作整个单位的载体
+      // （`view.root.body === view.body`），所以 root 也"带 body"，会被误认成单位
+      // —— 同一个单位上报两次，且第二次拿到的是 root 而不是 view（实测踩过）。
+      //
+      // 用 `n.body === child` 则一举两得：既确认 n 是 view，又确认 child 正是它的身体。
+      // 这样 root 自己（它的 body 是另一个对象）不会被误判，内部零件也不会。
+      if (n.body === child) return n;
+      n = n.parent;
+    }
+    return null;
+  }
 
   const original = proto.addChild;
   proto.addChild = function patchedAddChild(...args) {
     const result = original.apply(this, args);
     try {
+      if (state.debug) state.seenAdds++;
       for (const child of args) {
-        if (!looksLikeUnitView(child)) continue;
-        // ⚠️ 注意这里**不要**把 `this` 当成"单位层"。
-        // 时序陷阱（实测踩过）：UnitView 构造时先 `layers.units.addChild(root)`，
-        // 紧接着执行 `this.root.addChild(this.body)` —— 后者也会进这个钩子，
-        // 于是若把 `this` 记为单位层，就会把 **root** 当成单位层，
-        // 之后遍历它的 children 只会拿到 body/aura/plate 这些内部零件，一个单位都认不出。
-        //
-        // 正确做法：onUnit 拿到的就是 view 自己，**注册表以 view 为准**，不依赖容器遍历。
-        state.onUnit?.(child);
+        const view = viewOf(child);
+        if (view) {
+          if (!state.unitsLayer && this === view.root) {
+            state.unitsLayer = this.parent || null;
+          }
+          state.onUnit?.(view);
+        }
       }
     } catch (err) {
       console.warn(`${LOG} 单位发现出错（不影响游戏）`, err);
@@ -426,10 +463,12 @@ export function start(env = {}) {
 
 /** 面板上显示的状态行（让玩家一眼看出插件到底有没有在工作）。 */
 function statusOf(storage) {
+  const st = globalThis.PIXI?.Container?.prototype?.__sbState;
   return {
     hooked: !!globalThis.PIXI?.Container?.prototype?.__sbPatched,
     layer: !!layerRef(),
     units: units.size,
+    seenAdds: st?.seenAdds ?? 0,
     degraded: storage.degraded === true,
   };
 }
