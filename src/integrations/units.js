@@ -12,16 +12,27 @@
 import { createUnitEffect } from '../core/unit-effect.js';
 
 /**
- * 判断一个 PIXI 显示对象是否是一个单位视图。
+ * 判断一个 PIXI 显示对象是否是一个单位视图（UnitView）。
  *
- * 这三个字段的组合是 UnitView 独有的 —— 同一个 `layers.units` 里还有 TileField 的道具，
- * 它们没有 `body` / `root` / `hud`。
+ * ⚠️ **时序陷阱** —— 本插件最容易写错的一处。`UnitView` 的构造顺序是：
+ *
+ * ```
+ * root = new Container();  layers.units.addChild(root);   ← 发现钩子在这里触发
+ * body = new Container();  root.addChild(body);
+ * …
+ * hud  = new Container();  layers.bars.addChild(hud);     ← hud 比 root 入层更晚
+ * ```
+ *
+ * 所以在「root 入层」那一刻若要求 `body && root && hud` 三者俱全，会**太早**而全部漏掉
+ * （实测表现：面板状态一直是"已挂钩，等待单位"，而单位明明在场）。
+ *
+ * 因此判定只要 `body`（那时已存在）：`body.scale` 可写是 UnitView 独有的特征 ——
+ * 同一个 units 层里的道具没有 `body`。
  */
 export function looksLikeUnitView(obj) {
   if (!obj || typeof obj !== 'object') return false;
   const body = obj.body;
   if (!body || !Array.isArray(body.children)) return false;
-  if (!obj.root || !obj.hud) return false;
   return !!body.scale && typeof body.scale === 'object';
 }
 

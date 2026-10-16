@@ -206,8 +206,17 @@ function apply(st) {
 
   const { x: sx, y: sy } = scaleFor(st.deform.squash);
 
-  // 自转量化：把连续角度吸附到台阶上。写入次数因此从"每帧"降到"每台阶一次"。
-  const steps = Math.max(4, Math.round(st.cfg.spinSteps ?? SPIN_STEPS_PER_TURN));
+  // 自转量化：把连续角度吸附到台阶上，写入次数因此从"每帧"降到"每台阶一次"。
+  //
+  // 步数**按周期缩放**，目标是"每秒写入次数大致恒定"（≈ SPIN_WRITES_PER_SEC），
+  // 而不是"每圈固定步数"。
+  //
+  // 推导：每秒写入次数 = steps / spinPeriod，要它等于 SPIN_WRITES_PER_SEC，
+  // 于是 **steps = SPIN_WRITES_PER_SEC × spinPeriod**。
+  // 周期越长，一圈可以分更多步而不增加每秒写入 —— 慢速自转更顺滑，快速自转也不会失控。
+  // 下限 8 步（慢速也别看出台阶）、上限 60 步（不超过 60fps，超过就没意义了）。
+  const rateTarget = (st.cfg.spinSteps ?? SPIN_STEPS_PER_TURN) / 2.7; // 默认 24 步 / 2.7 秒
+  const steps = Math.max(8, Math.min(60, Math.round(rateTarget * st.cfg.spinPeriod)));
   const q = Math.round(st.spin / (2 * Math.PI) * steps) / steps * 2 * Math.PI;
 
   if (st.cfg.spinAxis === 'screen') {

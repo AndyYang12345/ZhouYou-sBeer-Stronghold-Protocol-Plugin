@@ -342,8 +342,17 @@ function apply(st) {
 
   const { x: sx, y: sy } = scaleFor(st.deform.squash);
 
-  // 自转量化：把连续角度吸附到台阶上。写入次数因此从"每帧"降到"每台阶一次"。
-  const steps = Math.max(4, Math.round(st.cfg.spinSteps ?? SPIN_STEPS_PER_TURN));
+  // 自转量化：把连续角度吸附到台阶上，写入次数因此从"每帧"降到"每台阶一次"。
+  //
+  // 步数**按周期缩放**，目标是"每秒写入次数大致恒定"（≈ SPIN_WRITES_PER_SEC），
+  // 而不是"每圈固定步数"。
+  //
+  // 推导：每秒写入次数 = steps / spinPeriod，要它等于 SPIN_WRITES_PER_SEC，
+  // 于是 **steps = SPIN_WRITES_PER_SEC × spinPeriod**。
+  // 周期越长，一圈可以分更多步而不增加每秒写入 —— 慢速自转更顺滑，快速自转也不会失控。
+  // 下限 8 步（慢速也别看出台阶）、上限 60 步（不超过 60fps，超过就没意义了）。
+  const rateTarget = (st.cfg.spinSteps ?? SPIN_STEPS_PER_TURN) / 2.7; // 默认 24 步 / 2.7 秒
+  const steps = Math.max(8, Math.min(60, Math.round(rateTarget * st.cfg.spinPeriod)));
   const q = Math.round(st.spin / (2 * Math.PI) * steps) / steps * 2 * Math.PI;
 
   if (st.cfg.spinAxis === 'screen') {
@@ -371,16 +380,27 @@ function apply(st) {
 // `body.scale` / `body.rotation` 在上游代码里**从未被赋值**（只有 addChild），是我们的干净挂载点。
 
 /**
- * 判断一个 PIXI 显示对象是否是一个单位视图。
+ * 判断一个 PIXI 显示对象是否是一个单位视图（UnitView）。
  *
- * 这三个字段的组合是 UnitView 独有的 —— 同一个 `layers.units` 里还有 TileField 的道具，
- * 它们没有 `body` / `root` / `hud`。
+ * ⚠️ **时序陷阱** —— 本插件最容易写错的一处。`UnitView` 的构造顺序是：
+ *
+ * ```
+ * root = new Container();  layers.units.addChild(root);   ← 发现钩子在这里触发
+ * body = new Container();  root.addChild(body);
+ * …
+ * hud  = new Container();  layers.bars.addChild(hud);     ← hud 比 root 入层更晚
+ * ```
+ *
+ * 所以在「root 入层」那一刻若要求 `body && root && hud` 三者俱全，会**太早**而全部漏掉
+ * （实测表现：面板状态一直是"已挂钩，等待单位"，而单位明明在场）。
+ *
+ * 因此判定只要 `body`（那时已存在）：`body.scale` 可写是 UnitView 独有的特征 ——
+ * 同一个 units 层里的道具没有 `body`。
  */
 function looksLikeUnitView(obj) {
   if (!obj || typeof obj !== 'object') return false;
   const body = obj.body;
   if (!body || !Array.isArray(body.children)) return false;
-  if (!obj.root || !obj.hud) return false;
   return !!body.scale && typeof body.scale === 'object';
 }
 
@@ -1017,14 +1037,15 @@ function installUnitDiscovery(PIXI = globalThis.PIXI) {
     const result = original.apply(this, args);
     try {
       for (const child of args) {
-        if (looksLikeUnitView(child)) {
-          if (!state.unitsLayer) {
-            state.unitsLayer = this;
-            cachedLayer = this;
-            console.info(`${LOG} 已定位单位层（当前 ${this.children.length} 个子对象）`);
-          }
-          state.onUnit?.(child);
-        }
+        if (!looksLikeUnitView(child)) continue;
+        // ⚠️ 注意这里**不要**把 `this` 当成"单位层"。
+        // 时序陷阱（实测踩过）：UnitView 构造时先 `layers.units.addChild(root)`，
+        // 紧接着执行 `this.root.addChild(this.body)` —— 后者也会进这个钩子，
+        // 于是若把 `this` 记为单位层，就会把 **root** 当成单位层，
+        // 之后遍历它的 children 只会拿到 body/aura/plate 这些内部零件，一个单位都认不出。
+        //
+        // 正确做法：onUnit 拿到的就是 view 自己，**注册表以 view 为准**，不依赖容器遍历。
+        state.onUnit?.(child);
       }
     } catch (err) {
       console.warn(`${LOG} 单位发现出错（不影响游戏）`, err);
@@ -1044,9 +1065,26 @@ function installUnitDiscovery(PIXI = globalThis.PIXI) {
  */
 const effects = new WeakMap();
 
-/** 单位层引用（挂钩时记录，避免每帧走原型链）。 */
+/**
+ * 已发现的单位（活跃集合）。
+ *
+ * 为什么用 Set 而不是每帧遍历场景图里的 children：单位是在构造时通过 addChild 钩子
+ * 逐个发现的，而"单位层"本身难以稳妥认定（见 installUnitDiscovery 的时序陷阱注释）。
+ * 以 view 为准既准确，又省掉每帧对一堆子对象做形状判断。
+ */
+const units = new Set();
+
+/** 单位层的父容器引用，**仅用于状态显示**，不参与驱动。 */
 let cachedLayer = null;
-const layerRef = () => cachedLayer || (cachedLayer = globalThis.PIXI?.Container?.prototype?.__sbState?.unitsLayer || null);
+const layerRef = () => cachedLayer;
+
+/** 登记一个单位；返回是否新登记。 */
+function trackUnit(view) {
+  if (!looksLikeUnitView(view) || units.has(view)) return false;
+  units.add(view);
+  if (!cachedLayer && view.root?.parent) cachedLayer = view.root.parent;
+  return true;
+}
 
 /** 当前帧的 dt（秒），由帧循环写入。 */
 let frameDt = 1 / 60;
@@ -1058,20 +1096,20 @@ function debugOn(storage = globalThis.localStorage) {
 const stats = { ticks: 0, units: 0, ms: 0, at: 0, maxMs: 0 };
 const getStats = () => ({ ...stats });
 
-/** 遍历当前单位层，推进所有特效。 */
+/** 推进所有已登记单位的特效。 */
 function tickEffects(storage) {
-  // 层引用提到循环外：原来每单位都要走一次原型链查找
-  const layer = layerRef();
-  if (!layer) return;
   if (!storage.settings.effect.enabled) return;
   const t0 = storage.debug ? performance.now() : 0;
-  const list = layer.children;
   let n = 0;
-  for (let i = 0; i < list.length; i++) {
-    const view = list[i];
+  for (const view of units) {
+    // 单位被回收后其 root 会脱离场景图：顺手清理，避免集合无限增长
+    if (view.destroyed === true || (view.root && view.root.parent === null)) {
+      units.delete(view);
+      effects.delete(view);
+      continue;
+    }
     let fx = effects.get(view);
     if (!fx) {
-      if (!looksLikeUnitView(view)) continue;
       fx = attachEffect(view, storage.settings.effect);
       if (!fx) continue;
       effects.set(view, fx);
@@ -1088,7 +1126,7 @@ function tickEffects(storage) {
     if (now - stats.at >= 2000) {
       console.info(`${LOG} 诊断：${stats.ticks} 帧 / ${(now - stats.at).toFixed(0)}ms，` +
         `平均 ${(stats.ms / Math.max(1, stats.ticks)).toFixed(2)}ms/帧，最慢 ${stats.maxMs.toFixed(2)}ms，` +
-        `平均单位数 ${(stats.units / Math.max(1, stats.ticks)).toFixed(1)}`);
+        `注册单位 ${units.size}`);
       stats.ticks = 0; stats.units = 0; stats.ms = 0; stats.maxMs = 0; stats.at = now;
     }
   }
@@ -1146,9 +1184,7 @@ function watchMatchState(storage, doc = globalThis.document) {
   if (!doc?.documentElement) return () => {};
   const reset = () => {
     if (doc.documentElement.classList.contains('sp-in-match')) return;
-    const layer = globalThis.PIXI?.Container?.prototype?.__sbState?.unitsLayer;
-    if (!layer) return;
-    for (const view of layer.children) effects.get(view)?.reset();
+    for (const view of units) effects.get(view)?.reset();
   };
   const mo = new MutationObserver(reset);
   mo.observe(doc.documentElement, { attributes: true, attributeFilter: ['class'] });
@@ -1159,13 +1195,12 @@ function watchMatchState(storage, doc = globalThis.document) {
 // ---- 设置改动即时生效（不必重载页面）----------------------------------------
 
 function applyLiveSettings(storage) {
-  const layer = globalThis.PIXI?.Container?.prototype?.__sbState?.unitsLayer;
-  if (!layer) return;
   const e = storage.settings.effect;
-  for (const view of layer.children) {
-    if (!looksLikeUnitView(view)) continue;
+  // 以已登记的单位为准：打开开关时**立刻**给在场单位补上特效，
+  // 否则玩家会以为开关没反应（要等下一个单位出现才看到效果）。
+  for (const view of units) {
     let fx = effects.get(view);
-    if (!e.enabled) { fx?.setEnabled(false); continue; }
+    if (!e.enabled) { fx?.setEnabled(false); fx?.reset(); continue; }
     if (!fx) {
       fx = attachEffect(view, e);
       if (fx) effects.set(view, fx);
@@ -1176,6 +1211,7 @@ function applyLiveSettings(storage) {
     Object.assign(fx.state.cfg, {
       strength: e.strength,
       spinAxis: e.spinAxis,
+      spinSteps: e.spinSteps,
       hopAmplitude: e.hopAmplitude,
       pulsesPerSecond: e.pulsesPerSecond,
       deadSpinScale: e.deadSpinScale,
@@ -1248,12 +1284,8 @@ function start(env = {}) {
 
   // PIXI 是进入对局时才按需加载的：这里只负责"等它并挂钩"，不再决定整个插件是否启动。
   function wire(disc) {
-    disc.onUnit = (view) => {
-      if (!storage.settings.effect.enabled) return;
-      if (effects.has(view)) return;
-      const fx = attachEffect(view, storage.settings.effect);
-      if (fx) effects.set(view, fx);
-    };
+    // 始终登记：这样"先建了单位、之后才打开开关"也能立刻生效
+    disc.onUnit = (view) => { trackUnit(view); };
   }
   let waitTimer = 0;
   const initial = installUnitDiscovery(env.PIXI ?? globalThis.PIXI);
@@ -1288,11 +1320,10 @@ function start(env = {}) {
 
 /** 面板上显示的状态行（让玩家一眼看出插件到底有没有在工作）。 */
 function statusOf(storage) {
-  const layer = layerRef();
   return {
     hooked: !!globalThis.PIXI?.Container?.prototype?.__sbPatched,
-    layer: !!layer,
-    units: layer ? layer.children.filter(looksLikeUnitView).length : 0,
+    layer: !!layerRef(),
+    units: units.size,
     degraded: storage.degraded === true,
   };
 }
