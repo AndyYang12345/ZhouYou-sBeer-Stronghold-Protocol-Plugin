@@ -17,7 +17,7 @@
 // 详见 integrations/host.js 抬头 —— 那里记录了"挂钩原型自己猜"那条路连踩的三个坑。
 
 import { EFFECT_DEFAULTS } from './core/unit-effect.js';
-import { attachEffect, driveUnit, optionsFor } from './integrations/units.js';
+import { attachEffect, driveUnit, driveUnitDj, resetUnitDj, optionsFor } from './integrations/units.js';
 import { resolveHost, collectUnits } from './integrations/host.js';
 import { createMusicController } from './integrations/audio.js';
 import { attachSettingsPanel } from './integrations/panel.js';
@@ -182,16 +182,26 @@ export function tickEffects(storage, host) {
   if (!h) return 0;
   const t0 = storage.debug ? performance.now() : 0;
   const list = collectUnits(h, unitScratch);
+  const e = storage.settings.effect;
+  // ★ 参考实现路径（core/dj.js）：纯时间函数，所有单位读**同一个时刻** ⇒ 天然严格同相。
+  //   它没有逐单位的状态推进，所以既不需要 attachEffect、也没有弹簧/阈值/台阶，
+  //   每帧只是几次乘加 —— 这正是"单位多时也不掉帧"的原因。
+  const useDj = e.djMode !== false;
   let attached = 0;
   let driven = 0;
   for (let i = 0; i < list.length; i++) {
     if (driven + attached >= UNIT_BUDGET_PER_FRAME) break;   // 固定预算（不改数组长度，避免污染复用缓冲）
     const view = list[i];
+    if (useDj) {
+      driveUnitDj(view, sharedPhase, e);
+      driven++;
+      continue;
+    }
     let fx = effects.get(view);
     if (!fx) {
       // 新单位：受每帧预算限制（见上），本帧超了就留到下一帧
       if (attached >= ATTACH_BUDGET_PER_FRAME) continue;
-      fx = attachEffect(view, storage.settings.effect);
+      fx = attachEffect(view, e);
       if (!fx) continue;
       effects.set(view, fx);
       attached++;
@@ -360,7 +370,7 @@ export function applyLiveSettings(storage, host) {
   const list = h ? collectUnits(h) : [];
   for (const view of list) {
     let fx = effects.get(view);
-    if (!e.enabled) { fx?.setEnabled(false); fx?.reset(); continue; }
+    if (!e.enabled) { fx?.setEnabled(false); fx?.reset(); resetUnitDj(view); continue; }
     if (!fx) {
       fx = attachEffect(view, e);
       if (fx) effects.set(view, fx);

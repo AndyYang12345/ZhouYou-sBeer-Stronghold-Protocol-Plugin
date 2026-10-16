@@ -10,6 +10,7 @@
 // `body.scale` / `body.rotation` 在上游代码里**从未被赋值**（只有 addChild），是我们的干净挂载点。
 
 import { createUnitEffect } from '../core/unit-effect.js';
+import { djFactors, djApply, djRestore, DJ_DEFAULTS } from '../core/dj.js';
 
 /**
  * 判断一个 PIXI 显示对象是否是一个单位视图（UnitView）。
@@ -225,4 +226,99 @@ export function restoreFacing(view) {
   if (prev.visFacing !== undefined) view.visFacing = prev.visFacing;
   if (prev.hasDir !== undefined) view.hasDir = prev.hasDir;
   view._sbFacingBack = false;
+}
+
+
+// ---- 参考实现路径（dj）---------------------------------------------------------
+//
+// 与既有实现的区别：**纯时间函数、无状态**。给定时刻直接算姿态，不推进任何积分。
+// 所以不需要弹簧、不需要写回阈值、不需要量化台阶，也天然全场同步。
+//
+// 保留两条路径是为了能干净回退：设置里的 `djMode` 一关就回到既有实现。
+
+/** 每个视图的 dj 状态（基准 scale/rotation 与复用缓冲，都不该每帧分配）。 */
+const djStates = new WeakMap();
+const djScratch = {};
+
+function djStateOf(view) {
+  let st = djStates.get(view);
+  if (!st) { st = { sx: undefined, sy: undefined, rot: undefined, f: {} }; djStates.set(view, st); }
+  return st;
+}
+
+/** 取该视图的 dj 参数（全部来自设置，周期单位是帧）。 */
+export function djOptionsFor(effect) {
+  return {
+    spinMode: effect.djSpinMode ?? DJ_DEFAULTS.spinMode,
+    spinPeriod: effect.djSpinPeriod ?? DJ_DEFAULTS.spinPeriod,
+    squashPeriod: effect.djSquashPeriod ?? DJ_DEFAULTS.squashPeriod,
+    squashMinPct: effect.djSquashMinPct ?? DJ_DEFAULTS.squashMinPct,
+    widthMaxPct: effect.djWidthMaxPct ?? DJ_DEFAULTS.widthMaxPct,
+  };
+}
+
+/** djOptionsFor 的复用缓冲（参数每帧相同，不必重复建对象）。 */
+const djOptsScratch = {};
+function djOptionsInto(effect, out) {
+  out.spinMode = effect.djSpinMode ?? DJ_DEFAULTS.spinMode;
+  out.spinPeriod = effect.djSpinPeriod ?? DJ_DEFAULTS.spinPeriod;
+  out.squashPeriod = effect.djSquashPeriod ?? DJ_DEFAULTS.squashPeriod;
+  out.squashMinPct = effect.djSquashMinPct ?? DJ_DEFAULTS.squashMinPct;
+  out.widthMaxPct = effect.djWidthMaxPct ?? DJ_DEFAULTS.widthMaxPct;
+  return out;
+}
+
+/**
+ * 驱动一个单位（dj 路径）。
+ *
+ * @param {object} view 单位视图
+ * @param {number} t 共享时刻（秒）—— **全场同一个值**，所以天然同相
+ * @param {object} effect 设置
+ */
+export function driveUnitDj(view, t, effect) {
+  const body = view && view.body;
+  if (!body) return;
+  const st = djStateOf(view);
+  const f = djFactors(djOptionsInto(effect, djOptsScratch), t, 0, st.f);
+  djApply(body, st, f);
+
+  // 转身换面：换不换由 cos θ 的**符号**决定（与参考实现同一判据），
+  // 禁区因此复用既有的 canFlip（强控/死亡/备战/无背面资产都不碰）。
+  const dying = view.dying === true || view.dead === true;
+  if (dying) restoreFacing(view);
+  else applyFacingDj(view, st, f);
+}
+
+/**
+ * dj 路径的换面判定：带死区的 `cos θ` 符号。
+ * 与既有实现的 `fx.facingFor()` 同一套迟滞逻辑，只是状态挂在 dj 的 st 上。
+ */
+function applyFacingDj(view, st, f) {
+  if (!f.axis) return;                       // 平面内 / 仅压缩：宽度不过零，不换面
+  const dead = 0.04;
+  const c = Math.cos(f.theta);
+  if (st.facingBack) { if (c > dead) st.facingBack = false; }
+  else if (c < -dead) st.facingBack = true;
+  else return;                               // 死区内保持上一次判定
+
+  const wantBack = st.facingBack === true;
+  if (wantBack === (view._sbFacingBack === true)) return;
+  if (!canFlip(view)) return;
+
+  const prev = { facing: view.facing, visFacing: view.visFacing, hasDir: view.hasDir };
+  try { view.setDir(wantBack ? 'UP' : 'RIGHT'); } catch (err) {
+    console.warn('[spin-bounce] 换面失败（不影响游戏）', err);
+    return;
+  }
+  if (prev.facing !== undefined) view.facing = prev.facing;
+  if (prev.visFacing !== undefined) view.visFacing = prev.visFacing;
+  if (prev.hasDir !== undefined) view.hasDir = prev.hasDir;
+  view._sbFacingBack = wantBack;
+}
+
+/** dj 路径的还原（停用特效时）。 */
+export function resetUnitDj(view) {
+  const st = djStates.get(view);
+  if (!st || !view) return;
+  djRestore(view.body, st);
 }

@@ -27,6 +27,7 @@ const ENTRY = join(SRC, 'client.js');
 
 /** 模块依赖顺序：被依赖的在前。手写而非自动分析——少一个依赖解析器的复杂度。 */
 const ORDER = [
+  'core/dj.js',
   'core/physics.js',
   'core/unit-effect.js',
   'integrations/units.js',

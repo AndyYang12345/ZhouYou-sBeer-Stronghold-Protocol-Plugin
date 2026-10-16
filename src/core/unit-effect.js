@@ -26,6 +26,15 @@ export const SPIN_WRITES_PER_SEC = 30;
 /** 默认参数。手感来自参考实现，自转周期也沿用它的 2.7 秒。 */
 export const EFFECT_DEFAULTS = Object.freeze({
   enabled: true,
+  // ★ 走**参考实现移植版**（core/dj.js）还是既有实现（弹簧+量化）。
+  //   移植版是纯时间函数、无状态 ⇒ 更省、天然同场同步、没有台阶问题。
+  //   保留开关是为了能干净回退（设 false 即回到既有实现）。
+  djMode: true,
+  djSpinMode: 'axis',      // 'axis' 绕竖直轴 | 'squash' 仅压缩 | 'flat' 平面内
+  djSpinPeriod: 67,        // 帧（参考实现默认 67 帧 ≈ 1.12 秒）
+  djSquashPeriod: 38,      // 帧（参考实现默认 38 帧 ≈ 0.63 秒）
+  djSquashMinPct: 60,      // 高度压到 60%
+  djWidthMaxPct: 110,      // 宽度撑到 110%
   strength: 1.15,          // Q弹强度倍数（参考实现默认 1.15）
   spinPeriod: 2.7,         // 自转一圈的秒数（参考实现默认 2.7）
   spinAxis: 'vertical',    // 'vertical' 竖轴（梗图效果）| 'screen' 屏幕平面内转

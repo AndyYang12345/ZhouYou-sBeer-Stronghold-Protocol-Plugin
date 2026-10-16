@@ -4,6 +4,152 @@
 // 改源码后运行：node tools/build-plugin.mjs
 
 
+// ======== src/core/dj.js ========
+// src/core/dj.js — 压缩/旋转的**逐帧数学**，逐行移植自参考实现。
+//
+// 来源：CyanFish / Stronghold-Protocol-CyanModPack（GPL-3.0-or-later，与本项目同许可）
+//   · mods/cyanfish.dj-all/client/config.js   → SQUASH_IN / SQUASH_OUT / squashProfile / DEFAULT_GLOBAL
+//   · mods/cyanfish.dj-all/client/engine-pixi.js → frameFactors / 写入模式 / 帧预算
+//
+// ===================== 为什么整段照搬而不是"参考思路" =====================
+//
+// 我原先自己写了一套：欠阻尼弹簧 + 冲量踢 + 连续正弦跟随 + 写回阈值 + 自转量化台阶。
+// 那套东西有三个先天的麻烦：
+//   1. **有状态**：弹簧状态会漂移、会因为接入时刻不同而不同步、会被跳帧影响；
+//   2. **每帧都要算**：即使观感上没变化也在推进积分；
+//   3. 为了省写入又叠了量化/阈值，逻辑越来越绕。
+//
+// 参考实现是**纯时间函数**：给定时刻 t，直接算出这一帧该是什么姿态。于是
+//   · 无状态 ⇒ 不漂移、天然同步（所有单位读同一个 t）、掉帧也不累积误差；
+//   · 简单 ⇒ 没有弹簧参数、没有阈值、没有台阶，"整不整齐"这个问题根本不存在；
+//   · 快 ⇒ 每帧只是几次乘加。
+//
+// 所以这次不再"借鉴思路"，而是**逐行移植数学**，只把 API 适配到本插件的结构。
+
+/** 参考实现里一切周期以**帧**为单位（FPS=60）。 */
+const FPS = 60;
+
+/** 压缩脉冲的相位划分：前 40% 压下去，接着 40% 弹回来，最后 20% 保持原状。 */
+const SQUASH_IN = 0.4;
+const SQUASH_OUT = 0.4;
+
+/**
+ * 压缩曲线（三角波）。逐行照搬 `config.js` 的 squashProfile。
+ *
+ * `u` 的小数部分决定相位：
+ *   [0, 0.4)        → 0 → 1     （压下去）
+ *   [0.4, 0.8)      → 1 → 0     （弹回来）
+ *   [0.8, 1)        → 0         （静止，让"压扁"有明确的节拍感而不是连续晃动）
+ *
+ * @param {number} u 相位（可为任意实数，内部取小数部分）
+ * @returns {number} 0..1 的压缩量
+ */
+function squashProfile(u) {
+  let x = Number(u) || 0;
+  x -= Math.floor(x);                       // 折回 [0,1)
+  if (x < SQUASH_IN) return x / SQUASH_IN;
+  if (x < SQUASH_IN + SQUASH_OUT) return 1 - (x - SQUASH_IN) / SQUASH_OUT;
+  return 0;
+}
+
+/** 参考实现的默认参数（逐字照搬 DEFAULT_GLOBAL）。 */
+const DJ_DEFAULTS = Object.freeze({
+  spinMode: 'axis',      // 'axis' 绕竖直轴 | 'squash' 仅压缩 | 'flat' 平面内
+  spinPeriod: 67,        // 帧
+  squashPeriod: 38,      // 帧
+  squashMinPct: 60,      // 高度压到 60%
+  widthMaxPct: 110,      // 宽度撑到 110%
+});
+
+/** 「仅压缩」模式不乘 cos θ（照搬 NO_SPIN_MODES）。 */
+const NO_SPIN_MODES = Object.freeze(['squash']);
+
+const TAU = Math.PI * 2;
+const clampNum = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+const num0 = (v, d) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+
+/**
+ * 由时刻 `t`（秒）算出这一帧的各个系数。
+ * **逐行移植** `engine-pixi.js` 的 frameFactors，只把入参名换成秒 + 一个相位偏移。
+ *
+ * @param {object} c 参数（见 DJ_DEFAULTS，周期单位是帧）
+ * @param {number} t 该单位自己的时间（秒）
+ * @param {number} [phase] 额外相位偏移（0..1）。同步模式全传 0 ⇒ 全场严格同相
+ * @param {object} [out] 复用的输出对象（这是每帧热路径，不该分配）
+ */
+function djFactors(c, t, phase = 0, out = {}) {
+  const M = clampNum(num0(c && c.squashMinPct, 60) / 100, 0.05, 1);
+  const W = clampNum(num0(c && c.widthMaxPct, 110) / 100, 1, 2);
+  const Tq = Math.max(1, num0(c && c.squashPeriod, 38)) / FPS;
+  const Ts = Math.max(1, num0(c && c.spinPeriod, 67)) / FPS;
+  const mode = (c && c.spinMode) || 'axis';
+  const phi = num0(phase, 0);
+  const tt = Number(t) || 0;
+
+  const s = squashProfile(tt / Tq + phi);
+  const theta = TAU * (tt / Ts + phi);
+  const axis = mode === 'axis';
+
+  out.s = s;
+  out.theta = theta;
+  out.axis = axis;
+  out.flat = mode === 'flat';
+  out.noSpin = NO_SPIN_MODES.indexOf(mode) >= 0;
+  out.yK = 1 - (1 - M) * s;
+  out.xK = 1 + (W - 1) * s;
+  // axis 模式：宽度额外乘 cos θ（**允许为负** ⇒ 自然镜像 = 转到了背面）
+  out.axisK = axis ? Math.cos(theta) : 1;
+  return out;
+}
+
+/**
+ * 把系数写进一个 PIXI 容器，按参考实现的"写入模式"语义。
+ *
+ * 逐行对应 `applyTarget` 里的两段：
+ * ```
+ * if (tgt.scale === MODE_FREE && o.scale) {
+ *   if (typeof s.sx !== 'number') { s.sx = o.scale.x; s.sy = o.scale.y; }   // 记基准一次
+ *   const x = s.sx * ctx.xK * axisK, y = s.sy * ctx.yK;
+ *   o.scale.set(x, y); s.wx = x; s.wy = y;
+ * }
+ * if (tgt.rot === MODE_FREE && typeof o.rotation === 'number') {
+ *   if (typeof s.rot !== 'number') s.rot = o.rotation;
+ *   if (ctx.flat) o.rotation = s.rot + ctx.theta;      // ★ 只有平面内才写 rotation
+ * }
+ * ```
+ *
+ * ★ `MODE_FREE` = "宿主从不写这个字段" ⇒ 第一次碰到时记下原值当基准，之后写 `基准 × 系数`。
+ *   单位 `body` 的 scale / rotation 正是这种（参考实现的逐字段表标为 `scale free · rot free`）。
+ *   因为基准只记一次，**不需要写回阈值也不需要量化** —— 系数就是当帧的真实值，
+ *   没有"累积漂移"这回事。
+ *
+ * @param {object} o PIXI 容器
+ * @param {object} st 该容器的持久状态（{sx, sy, rot} 基准值）
+ * @param {object} f djFactors 的输出
+ */
+function djApply(o, st, f) {
+  if (!o) return;
+  if (o.scale) {
+    if (typeof st.sx !== 'number') { st.sx = o.scale.x; st.sy = o.scale.y; }
+    o.scale.x = st.sx * f.xK * f.axisK;
+    o.scale.y = st.sy * f.yK;
+  }
+  // ★ 只有「平面内」才写 rotation（照搬参考实现：绕竖直轴/仅压缩都不写）
+  if (f.flat && typeof o.rotation === 'number') {
+    if (typeof st.rot !== 'number') st.rot = o.rotation;
+    o.rotation = st.rot + f.theta;
+  }
+}
+
+/** 还原到基准姿态（关掉特效 / 离开对局时用）。 */
+function djRestore(o, st) {
+  if (!o) return;
+  try {
+    if (o.scale && typeof st.sx === 'number') o.scale.set(st.sx, st.sy);
+    if (typeof st.rot === 'number' && typeof o.rotation === 'number') o.rotation = st.rot;
+  } catch { /* ignore */ }
+}
+
 // ======== src/core/physics.js ========
 // src/physics.js — 欠阻尼弹簧：挤压 / 拉伸的手感来源。
 //
@@ -171,6 +317,15 @@ const SPIN_WRITES_PER_SEC = 30;
 /** 默认参数。手感来自参考实现，自转周期也沿用它的 2.7 秒。 */
 const EFFECT_DEFAULTS = Object.freeze({
   enabled: true,
+  // ★ 走**参考实现移植版**（core/dj.js）还是既有实现（弹簧+量化）。
+  //   移植版是纯时间函数、无状态 ⇒ 更省、天然同场同步、没有台阶问题。
+  //   保留开关是为了能干净回退（设 false 即回到既有实现）。
+  djMode: true,
+  djSpinMode: 'axis',      // 'axis' 绕竖直轴 | 'squash' 仅压缩 | 'flat' 平面内
+  djSpinPeriod: 67,        // 帧（参考实现默认 67 帧 ≈ 1.12 秒）
+  djSquashPeriod: 38,      // 帧（参考实现默认 38 帧 ≈ 0.63 秒）
+  djSquashMinPct: 60,      // 高度压到 60%
+  djWidthMaxPct: 110,      // 宽度撑到 110%
   strength: 1.15,          // Q弹强度倍数（参考实现默认 1.15）
   spinPeriod: 2.7,         // 自转一圈的秒数（参考实现默认 2.7）
   spinAxis: 'vertical',    // 'vertical' 竖轴（梗图效果）| 'screen' 屏幕平面内转
@@ -745,6 +900,100 @@ function restoreFacing(view) {
   if (prev.visFacing !== undefined) view.visFacing = prev.visFacing;
   if (prev.hasDir !== undefined) view.hasDir = prev.hasDir;
   view._sbFacingBack = false;
+}
+
+// ---- 参考实现路径（dj）---------------------------------------------------------
+//
+// 与既有实现的区别：**纯时间函数、无状态**。给定时刻直接算姿态，不推进任何积分。
+// 所以不需要弹簧、不需要写回阈值、不需要量化台阶，也天然全场同步。
+//
+// 保留两条路径是为了能干净回退：设置里的 `djMode` 一关就回到既有实现。
+
+/** 每个视图的 dj 状态（基准 scale/rotation 与复用缓冲，都不该每帧分配）。 */
+const djStates = new WeakMap();
+const djScratch = {};
+
+function djStateOf(view) {
+  let st = djStates.get(view);
+  if (!st) { st = { sx: undefined, sy: undefined, rot: undefined, f: {} }; djStates.set(view, st); }
+  return st;
+}
+
+/** 取该视图的 dj 参数（全部来自设置，周期单位是帧）。 */
+function djOptionsFor(effect) {
+  return {
+    spinMode: effect.djSpinMode ?? DJ_DEFAULTS.spinMode,
+    spinPeriod: effect.djSpinPeriod ?? DJ_DEFAULTS.spinPeriod,
+    squashPeriod: effect.djSquashPeriod ?? DJ_DEFAULTS.squashPeriod,
+    squashMinPct: effect.djSquashMinPct ?? DJ_DEFAULTS.squashMinPct,
+    widthMaxPct: effect.djWidthMaxPct ?? DJ_DEFAULTS.widthMaxPct,
+  };
+}
+
+/** djOptionsFor 的复用缓冲（参数每帧相同，不必重复建对象）。 */
+const djOptsScratch = {};
+function djOptionsInto(effect, out) {
+  out.spinMode = effect.djSpinMode ?? DJ_DEFAULTS.spinMode;
+  out.spinPeriod = effect.djSpinPeriod ?? DJ_DEFAULTS.spinPeriod;
+  out.squashPeriod = effect.djSquashPeriod ?? DJ_DEFAULTS.squashPeriod;
+  out.squashMinPct = effect.djSquashMinPct ?? DJ_DEFAULTS.squashMinPct;
+  out.widthMaxPct = effect.djWidthMaxPct ?? DJ_DEFAULTS.widthMaxPct;
+  return out;
+}
+
+/**
+ * 驱动一个单位（dj 路径）。
+ *
+ * @param {object} view 单位视图
+ * @param {number} t 共享时刻（秒）—— **全场同一个值**，所以天然同相
+ * @param {object} effect 设置
+ */
+function driveUnitDj(view, t, effect) {
+  const body = view && view.body;
+  if (!body) return;
+  const st = djStateOf(view);
+  const f = djFactors(djOptionsInto(effect, djOptsScratch), t, 0, st.f);
+  djApply(body, st, f);
+
+  // 转身换面：换不换由 cos θ 的**符号**决定（与参考实现同一判据），
+  // 禁区因此复用既有的 canFlip（强控/死亡/备战/无背面资产都不碰）。
+  const dying = view.dying === true || view.dead === true;
+  if (dying) restoreFacing(view);
+  else applyFacingDj(view, st, f);
+}
+
+/**
+ * dj 路径的换面判定：带死区的 `cos θ` 符号。
+ * 与既有实现的 `fx.facingFor()` 同一套迟滞逻辑，只是状态挂在 dj 的 st 上。
+ */
+function applyFacingDj(view, st, f) {
+  if (!f.axis) return;                       // 平面内 / 仅压缩：宽度不过零，不换面
+  const dead = 0.04;
+  const c = Math.cos(f.theta);
+  if (st.facingBack) { if (c > dead) st.facingBack = false; }
+  else if (c < -dead) st.facingBack = true;
+  else return;                               // 死区内保持上一次判定
+
+  const wantBack = st.facingBack === true;
+  if (wantBack === (view._sbFacingBack === true)) return;
+  if (!canFlip(view)) return;
+
+  const prev = { facing: view.facing, visFacing: view.visFacing, hasDir: view.hasDir };
+  try { view.setDir(wantBack ? 'UP' : 'RIGHT'); } catch (err) {
+    console.warn('[spin-bounce] 换面失败（不影响游戏）', err);
+    return;
+  }
+  if (prev.facing !== undefined) view.facing = prev.facing;
+  if (prev.visFacing !== undefined) view.visFacing = prev.visFacing;
+  if (prev.hasDir !== undefined) view.hasDir = prev.hasDir;
+  view._sbFacingBack = wantBack;
+}
+
+/** dj 路径的还原（停用特效时）。 */
+function resetUnitDj(view) {
+  const st = djStates.get(view);
+  if (!st || !view) return;
+  djRestore(view.body, st);
 }
 
 // ======== src/integrations/host.js ========
@@ -1586,16 +1835,26 @@ function tickEffects(storage, host) {
   if (!h) return 0;
   const t0 = storage.debug ? performance.now() : 0;
   const list = collectUnits(h, unitScratch);
+  const e = storage.settings.effect;
+  // ★ 参考实现路径（core/dj.js）：纯时间函数，所有单位读**同一个时刻** ⇒ 天然严格同相。
+  //   它没有逐单位的状态推进，所以既不需要 attachEffect、也没有弹簧/阈值/台阶，
+  //   每帧只是几次乘加 —— 这正是"单位多时也不掉帧"的原因。
+  const useDj = e.djMode !== false;
   let attached = 0;
   let driven = 0;
   for (let i = 0; i < list.length; i++) {
     if (driven + attached >= UNIT_BUDGET_PER_FRAME) break;   // 固定预算（不改数组长度，避免污染复用缓冲）
     const view = list[i];
+    if (useDj) {
+      driveUnitDj(view, sharedPhase, e);
+      driven++;
+      continue;
+    }
     let fx = effects.get(view);
     if (!fx) {
       // 新单位：受每帧预算限制（见上），本帧超了就留到下一帧
       if (attached >= ATTACH_BUDGET_PER_FRAME) continue;
-      fx = attachEffect(view, storage.settings.effect);
+      fx = attachEffect(view, e);
       if (!fx) continue;
       effects.set(view, fx);
       attached++;
@@ -1764,7 +2023,7 @@ function applyLiveSettings(storage, host) {
   const list = h ? collectUnits(h) : [];
   for (const view of list) {
     let fx = effects.get(view);
-    if (!e.enabled) { fx?.setEnabled(false); fx?.reset(); continue; }
+    if (!e.enabled) { fx?.setEnabled(false); fx?.reset(); resetUnitDj(view); continue; }
     if (!fx) {
       fx = attachEffect(view, e);
       if (fx) effects.set(view, fx);
