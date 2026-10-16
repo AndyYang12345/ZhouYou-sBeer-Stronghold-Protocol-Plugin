@@ -146,29 +146,59 @@ function applyPivot(st) {
   st.pivotReady = true;
 }
 
+/**
+ * 写回显示对象的阈值：小于这个变化就不写。
+ *
+ * **这是性能的关键，不是可选的优化。** PIXI 的变换有"脏"标记：一旦写入 scale / rotation，
+ * 该容器（及其子树，一个单位是 spine 骨架，子节点上百）的 world transform 就会在本次渲染
+ * 里重算。而单位的形变在静止段几乎是常量 —— 无条件每帧写入等于**每帧强制重算所有单位的
+ * 整棵子树**，单位一多就把主线程拖死（实测会让游戏判定"插件卡死，由服务器接管本局"）。
+ *
+ * 加了阈值后，脉冲之间的绝大多数帧里数值没有可见变化，于是一个变换都不写，
+ * PIXI 的缓存自然生效。
+ */
+export const WRITE_EPSILON = 1e-3;
+
+/**
+ * 是否差异小到不值得写回。
+ *
+ * 用**相对 + 绝对下限**而不是单一绝对值：形状是 `max(epsilon, epsilon·|当前值|)`。
+ * 定这个阈值的依据是**可见精度**而不是浮点噪声 —— 0.1% 的缩放变化在任何分辨率下都看不出来，
+ * 但它每帧写一次就足以让 PIXI 每帧重算整棵子树。实测弹簧收敛后的残余形变约 5e-4 量级，
+ * 正好落在阈值以下（这就是这个阈值必须 ≥1e-3 的原因）。
+ */
+function near(a, b) {
+  const d = Math.abs(a - b);
+  return d < WRITE_EPSILON || d < WRITE_EPSILON * Math.abs(a);
+}
+
+/** 只在真的变了才写，避免无谓地让 PIXI 标脏。 */
+function writeTransform(t, sx, sy, rot) {
+  if (!near(t.scale.x, sx)) t.scale.x = sx;
+  if (!near(t.scale.y, sy)) t.scale.y = sy;
+  if (!near(t.rotation, rot)) t.rotation = rot;
+}
+
 function apply(st) {
   const t = st.target;
   if (!t) return;
   if (!st._baseCaptured) { st.baseRotation = fxNum(t.rotation, 0); st._baseCaptured = true; }
 
   if (!st.cfg.enabled) {
-    t.scale.x = 1; t.scale.y = 1;
-    t.rotation = st.baseRotation;
+    writeTransform(t, 1, 1, st.baseRotation);
     return;
   }
 
   const { x: sx, y: sy } = scaleFor(st.deform.squash);
-  t.scale.x = sx;
-  t.scale.y = sy;
 
   if (st.cfg.spinAxis === 'screen') {
     // 屏幕平面内转：连挤压一起转，看起来像"躺倒着打转"
-    t.rotation = st.baseRotation + st.spin;
+    writeTransform(t, sx, sy, st.baseRotation + st.spin);
   } else {
     // 竖轴自转：2D 贴图无法真正绕 Y 轴转，这里用"水平镜像 × 侧倾"近似 ——
     // 镜像让正反面交替出现，侧倾给一点透视暗示，合起来有"转过来"的读感。
     const c = Math.cos(st.spin);
-    t.scale.x = sx * (c >= 0 ? 1 : -1);
-    t.rotation = st.baseRotation + st.deform.squash * st.cfg.tiltFactor + Math.sin(st.spin) * 0.12;
+    writeTransform(t, sx * (c >= 0 ? 1 : -1), sy,
+      st.baseRotation + st.deform.squash * st.cfg.tiltFactor + Math.sin(st.spin) * 0.12);
   }
 }

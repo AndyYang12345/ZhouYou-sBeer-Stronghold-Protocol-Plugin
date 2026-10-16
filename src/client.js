@@ -70,13 +70,44 @@ export function mergeSettings(base, patch) {
 }
 
 export function readSettings(storage = globalThis.localStorage) {
+  let out;
   try {
     const raw = storage?.getItem(SETTINGS_KEY);
-    if (!raw) return clone(DEFAULT_SETTINGS);
-    return mergeSettings(DEFAULT_SETTINGS, JSON.parse(raw));
+    out = raw ? mergeSettings(DEFAULT_SETTINGS, JSON.parse(raw)) : clone(DEFAULT_SETTINGS);
   } catch {
-    return clone(DEFAULT_SETTINGS);
+    out = clone(DEFAULT_SETTINGS);
   }
+  out.effect.enabled = applySafetySwitches(out.effect.enabled);
+  return out;
+}
+
+/**
+ * 安全阀（按优先级）：
+ *   1. URL 带 `?sbn=0` → 强制关闭并**持久化**（出问题时刷新一下就能救回来，不必进设置面板）
+ *   2. 系统「减少动态效果」→ 默认关闭（用户可再手动开启）
+ *   3. 系统「减少动态效果」+ URL `?sbn=1` → 尊重显式请求，开启
+ *
+ * 之所以要做第 1 条：这个特效每帧改写所有单位的变换，一旦性能出问题，玩家最需要的是
+ * **一个不用点进任何界面就能关掉它的开关**。
+ */
+function applySafetySwitches(current, storage = globalThis.localStorage, loc = globalThis.location) {
+  let on = current;
+  try {
+    const q = new URLSearchParams(loc?.search || '').get('sbn');
+    if (q === '0' || q === 'off') {
+      try { storage?.setItem(SETTINGS_KEY + '.killed', '1'); } catch { /* ignore */ }
+      return false;
+    }
+    if (q === '1' || q === 'on') {
+      try { storage?.removeItem(SETTINGS_KEY + '.killed'); } catch { /* ignore */ }
+      return true;
+    }
+    if (storage?.getItem(SETTINGS_KEY + '.killed') === '1') return false;
+  } catch { /* ignore */ }
+  try {
+    if (globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches) return false;
+  } catch { /* ignore */ }
+  return on;
 }
 
 export function writeSettings(s, storage = globalThis.localStorage) {
@@ -115,6 +146,7 @@ export function installUnitDiscovery(PIXI = globalThis.PIXI) {
         if (looksLikeUnitView(child)) {
           if (!state.unitsLayer) {
             state.unitsLayer = this;
+            cachedLayer = this;
             console.info(`${LOG} 已定位单位层（当前 ${this.children.length} 个子对象）`);
           }
           state.onUnit?.(child);
@@ -138,40 +170,92 @@ export function installUnitDiscovery(PIXI = globalThis.PIXI) {
  */
 const effects = new WeakMap();
 
+/** 单位层引用（挂钩时记录，避免每帧走原型链）。 */
+let cachedLayer = null;
+const layerRef = () => cachedLayer || (cachedLayer = globalThis.PIXI?.Container?.prototype?.__sbState?.unitsLayer || null);
+
 /** 当前帧的 dt（秒），由帧循环写入。 */
 let frameDt = 1 / 60;
 
+/** 性能诊断开关（settings.debug 或 localStorage 的 sp.plugin.spinBounce.debug = '1'）。 */
+function debugOn(storage = globalThis.localStorage) {
+  try { return storage?.getItem(SETTINGS_KEY + '.debug') === '1'; } catch { return false; }
+}
+const stats = { ticks: 0, units: 0, ms: 0, at: 0, maxMs: 0 };
+export const getStats = () => ({ ...stats });
+
 /** 遍历当前单位层，推进所有特效。 */
 export function tickEffects(storage) {
-  const layer = globalThis.PIXI?.Container?.prototype?.__sbState?.unitsLayer;
+  // 层引用提到循环外：原来每单位都要走一次原型链查找
+  const layer = layerRef();
   if (!layer) return;
+  if (!storage.settings.effect.enabled) return;
+  const t0 = storage.debug ? performance.now() : 0;
   const list = layer.children;
+  let n = 0;
   for (let i = 0; i < list.length; i++) {
     const view = list[i];
-    if (!looksLikeUnitView(view)) continue;
     let fx = effects.get(view);
     if (!fx) {
-      if (!storage.settings.effect.enabled) continue;
+      if (!looksLikeUnitView(view)) continue;
       fx = attachEffect(view, storage.settings.effect);
-      if (fx) effects.set(view, fx);
+      if (!fx) continue;
+      effects.set(view, fx);
     }
-    if (!fx) continue;
     driveUnit(view, fx, frameDt);
+    n++;
+  }
+  if (storage.debug) {
+    const ms = performance.now() - t0;
+    stats.ticks++; stats.units += n; stats.ms += ms;
+    if (ms > stats.maxMs) stats.maxMs = ms;
+    const now = performance.now();
+    if (!stats.at) stats.at = now;
+    if (now - stats.at >= 2000) {
+      console.info(`${LOG} 诊断：${stats.ticks} 帧 / ${(now - stats.at).toFixed(0)}ms，` +
+        `平均 ${(stats.ms / Math.max(1, stats.ticks)).toFixed(2)}ms/帧，最慢 ${stats.maxMs.toFixed(2)}ms，` +
+        `平均单位数 ${(stats.units / Math.max(1, stats.ticks)).toFixed(1)}`);
+      stats.ticks = 0; stats.units = 0; stats.ms = 0; stats.maxMs = 0; stats.at = now;
+    }
   }
 }
 
 // ---- 帧循环 ------------------------------------------------------------------
 
+/**
+ * 自适应降级：连续多帧耗时超过预算就**自动关掉特效**并明确告知玩家。
+ *
+ * 宁可功能自己退场，也不能把整局拖到"服务器接管" —— 那会直接毁掉玩家的对局。
+ * 阈值取得比一帧预算（16.7ms）宽，避免偶发抖动误杀。
+ */
+const BUDGET_MS = 4;          // 特效自己每帧的时间预算
+const BUDGET_STRIKES = 90;    // 连续超预算这么多帧就降级（约 1.5 秒）
+
 function startFrameLoop(storage, raf = globalThis.requestAnimationFrame?.bind(globalThis)) {
   if (!raf) return () => {};
   let last = 0;
   let stopped = false;
+  let strikes = 0;
+  let degraded = false;
   const step = (now) => {
     if (stopped) return;
     // 切后台再回来时 dt 会很大 —— core 里也有一道防护，这里先夹一次
     frameDt = last ? Math.min((now - last) / 1000, 0.25) : 1 / 60;
     last = now;
+    const t0 = performance.now();
     try { tickEffects(storage); } catch (err) { console.warn(`${LOG} 帧驱动出错`, err); }
+    const cost = performance.now() - t0;
+    if (!degraded) {
+      strikes = cost > BUDGET_MS ? strikes + 1 : 0;
+      if (strikes >= BUDGET_STRIKES) {
+        degraded = true;
+        storage.settings.effect.enabled = false;
+        try { writeSettings(storage.settings); } catch { /* ignore */ }
+        console.warn(`${LOG} 特效每帧耗时持续超过 ${BUDGET_MS}ms，已**自动关闭**以免拖慢对局。` +
+          `可在设置面板重新开启，或用 ?sbn=0 永久关闭。`);
+        try { globalThis.dispatchEvent?.(new CustomEvent('spin-bounce-degraded')); } catch { /* ignore */ }
+      }
+    }
     raf(step);
   };
   raf(step);
@@ -239,7 +323,7 @@ export function start(env = {}) {
 
   const doc = env.document ?? globalThis.document;
   const settings = env.settings ?? readSettings(env.storage ?? globalThis.localStorage);
-  const storage = { settings };
+  const storage = { settings, debug: env.debug ?? debugOn(env.storage ?? globalThis.localStorage) };
 
   // **PIXI 是进入对局时才按需加载的**（render/app.js: "PixiJS 7 (global PIXI) +
   // pixi-spine, loaded on demand"）。而 trusted 插件在房间内容集就绪时就导入，
@@ -271,7 +355,7 @@ export function start(env = {}) {
   }
   wire(discovery);
 
-  const stopLoop = startFrameLoop(storage, env.requestAnimationFrame);
+  const stopLoop = startFrameLoop(storage, env.requestAnimationFrame, storage);
   const stopWatch = watchMatchState(storage, doc);
 
   const music = createMusicController({

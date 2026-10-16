@@ -72,11 +72,23 @@ export function measureModelHeight(view) {
  * @param {object} fx 特效实例
  * @param {number} dt 秒
  */
+/**
+ * 支点测量的重试预算。
+ *
+ * 为什么要设上限：`measureModelHeight` 要读 Spine 的内部尺寸，而模型是**异步加载**的，
+ * 在它就绪前每一帧都测一次是纯浪费；如果模型永远量不到（尺寸异常、结构不同），
+ * 那就是**每帧一次的无用功**，会把主线程拖慢。
+ */
+export const PIVOT_TRIES_MAX = 20;
+
 export function driveUnit(view, fx, dt) {
-  // 模型可能刚加载完（之前量不到高度），在没设成支点前一直重试
+  // 模型可能刚加载完（之前量不到高度），重试若干次即可，不做无上限的每帧测量
   if (!fx.state.pivotReady) {
-    const h = measureModelHeight(view);
-    if (h > 0) fx.setModelHeight(h);
+    fx.state.pivotTries = (fx.state.pivotTries || 0) + 1;
+    if (fx.state.pivotTries <= PIVOT_TRIES_MAX) {
+      const h = measureModelHeight(view);
+      if (h > 0) fx.setModelHeight(h);
+    }
   }
 
   // 死亡：停弹跳、继续自转（本插件的明确行为）

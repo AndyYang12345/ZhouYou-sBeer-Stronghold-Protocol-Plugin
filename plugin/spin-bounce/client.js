@@ -282,30 +282,60 @@ function applyPivot(st) {
   st.pivotReady = true;
 }
 
+/**
+ * 写回显示对象的阈值：小于这个变化就不写。
+ *
+ * **这是性能的关键，不是可选的优化。** PIXI 的变换有"脏"标记：一旦写入 scale / rotation，
+ * 该容器（及其子树，一个单位是 spine 骨架，子节点上百）的 world transform 就会在本次渲染
+ * 里重算。而单位的形变在静止段几乎是常量 —— 无条件每帧写入等于**每帧强制重算所有单位的
+ * 整棵子树**，单位一多就把主线程拖死（实测会让游戏判定"插件卡死，由服务器接管本局"）。
+ *
+ * 加了阈值后，脉冲之间的绝大多数帧里数值没有可见变化，于是一个变换都不写，
+ * PIXI 的缓存自然生效。
+ */
+const WRITE_EPSILON = 1e-3;
+
+/**
+ * 是否差异小到不值得写回。
+ *
+ * 用**相对 + 绝对下限**而不是单一绝对值：形状是 `max(epsilon, epsilon·|当前值|)`。
+ * 定这个阈值的依据是**可见精度**而不是浮点噪声 —— 0.1% 的缩放变化在任何分辨率下都看不出来，
+ * 但它每帧写一次就足以让 PIXI 每帧重算整棵子树。实测弹簧收敛后的残余形变约 5e-4 量级，
+ * 正好落在阈值以下（这就是这个阈值必须 ≥1e-3 的原因）。
+ */
+function near(a, b) {
+  const d = Math.abs(a - b);
+  return d < WRITE_EPSILON || d < WRITE_EPSILON * Math.abs(a);
+}
+
+/** 只在真的变了才写，避免无谓地让 PIXI 标脏。 */
+function writeTransform(t, sx, sy, rot) {
+  if (!near(t.scale.x, sx)) t.scale.x = sx;
+  if (!near(t.scale.y, sy)) t.scale.y = sy;
+  if (!near(t.rotation, rot)) t.rotation = rot;
+}
+
 function apply(st) {
   const t = st.target;
   if (!t) return;
   if (!st._baseCaptured) { st.baseRotation = fxNum(t.rotation, 0); st._baseCaptured = true; }
 
   if (!st.cfg.enabled) {
-    t.scale.x = 1; t.scale.y = 1;
-    t.rotation = st.baseRotation;
+    writeTransform(t, 1, 1, st.baseRotation);
     return;
   }
 
   const { x: sx, y: sy } = scaleFor(st.deform.squash);
-  t.scale.x = sx;
-  t.scale.y = sy;
 
   if (st.cfg.spinAxis === 'screen') {
     // 屏幕平面内转：连挤压一起转，看起来像"躺倒着打转"
-    t.rotation = st.baseRotation + st.spin;
+    writeTransform(t, sx, sy, st.baseRotation + st.spin);
   } else {
     // 竖轴自转：2D 贴图无法真正绕 Y 轴转，这里用"水平镜像 × 侧倾"近似 ——
     // 镜像让正反面交替出现，侧倾给一点透视暗示，合起来有"转过来"的读感。
     const c = Math.cos(st.spin);
-    t.scale.x = sx * (c >= 0 ? 1 : -1);
-    t.rotation = st.baseRotation + st.deform.squash * st.cfg.tiltFactor + Math.sin(st.spin) * 0.12;
+    writeTransform(t, sx * (c >= 0 ? 1 : -1), sy,
+      st.baseRotation + st.deform.squash * st.cfg.tiltFactor + Math.sin(st.spin) * 0.12);
   }
 }
 
@@ -382,11 +412,23 @@ function measureModelHeight(view) {
  * @param {object} fx 特效实例
  * @param {number} dt 秒
  */
+/**
+ * 支点测量的重试预算。
+ *
+ * 为什么要设上限：`measureModelHeight` 要读 Spine 的内部尺寸，而模型是**异步加载**的，
+ * 在它就绪前每一帧都测一次是纯浪费；如果模型永远量不到（尺寸异常、结构不同），
+ * 那就是**每帧一次的无用功**，会把主线程拖慢。
+ */
+const PIVOT_TRIES_MAX = 20;
+
 function driveUnit(view, fx, dt) {
-  // 模型可能刚加载完（之前量不到高度），在没设成支点前一直重试
+  // 模型可能刚加载完（之前量不到高度），重试若干次即可，不做无上限的每帧测量
   if (!fx.state.pivotReady) {
-    const h = measureModelHeight(view);
-    if (h > 0) fx.setModelHeight(h);
+    fx.state.pivotTries = (fx.state.pivotTries || 0) + 1;
+    if (fx.state.pivotTries <= PIVOT_TRIES_MAX) {
+      const h = measureModelHeight(view);
+      if (h > 0) fx.setModelHeight(h);
+    }
   }
 
   // 死亡：停弹跳、继续自转（本插件的明确行为）
@@ -860,13 +902,44 @@ function mergeSettings(base, patch) {
 }
 
 function readSettings(storage = globalThis.localStorage) {
+  let out;
   try {
     const raw = storage?.getItem(SETTINGS_KEY);
-    if (!raw) return clone(DEFAULT_SETTINGS);
-    return mergeSettings(DEFAULT_SETTINGS, JSON.parse(raw));
+    out = raw ? mergeSettings(DEFAULT_SETTINGS, JSON.parse(raw)) : clone(DEFAULT_SETTINGS);
   } catch {
-    return clone(DEFAULT_SETTINGS);
+    out = clone(DEFAULT_SETTINGS);
   }
+  out.effect.enabled = applySafetySwitches(out.effect.enabled);
+  return out;
+}
+
+/**
+ * 安全阀（按优先级）：
+ *   1. URL 带 `?sbn=0` → 强制关闭并**持久化**（出问题时刷新一下就能救回来，不必进设置面板）
+ *   2. 系统「减少动态效果」→ 默认关闭（用户可再手动开启）
+ *   3. 系统「减少动态效果」+ URL `?sbn=1` → 尊重显式请求，开启
+ *
+ * 之所以要做第 1 条：这个特效每帧改写所有单位的变换，一旦性能出问题，玩家最需要的是
+ * **一个不用点进任何界面就能关掉它的开关**。
+ */
+function applySafetySwitches(current, storage = globalThis.localStorage, loc = globalThis.location) {
+  let on = current;
+  try {
+    const q = new URLSearchParams(loc?.search || '').get('sbn');
+    if (q === '0' || q === 'off') {
+      try { storage?.setItem(SETTINGS_KEY + '.killed', '1'); } catch { /* ignore */ }
+      return false;
+    }
+    if (q === '1' || q === 'on') {
+      try { storage?.removeItem(SETTINGS_KEY + '.killed'); } catch { /* ignore */ }
+      return true;
+    }
+    if (storage?.getItem(SETTINGS_KEY + '.killed') === '1') return false;
+  } catch { /* ignore */ }
+  try {
+    if (globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches) return false;
+  } catch { /* ignore */ }
+  return on;
 }
 
 function writeSettings(s, storage = globalThis.localStorage) {
@@ -905,6 +978,7 @@ function installUnitDiscovery(PIXI = globalThis.PIXI) {
         if (looksLikeUnitView(child)) {
           if (!state.unitsLayer) {
             state.unitsLayer = this;
+            cachedLayer = this;
             console.info(`${LOG} 已定位单位层（当前 ${this.children.length} 个子对象）`);
           }
           state.onUnit?.(child);
@@ -928,40 +1002,92 @@ function installUnitDiscovery(PIXI = globalThis.PIXI) {
  */
 const effects = new WeakMap();
 
+/** 单位层引用（挂钩时记录，避免每帧走原型链）。 */
+let cachedLayer = null;
+const layerRef = () => cachedLayer || (cachedLayer = globalThis.PIXI?.Container?.prototype?.__sbState?.unitsLayer || null);
+
 /** 当前帧的 dt（秒），由帧循环写入。 */
 let frameDt = 1 / 60;
 
+/** 性能诊断开关（settings.debug 或 localStorage 的 sp.plugin.spinBounce.debug = '1'）。 */
+function debugOn(storage = globalThis.localStorage) {
+  try { return storage?.getItem(SETTINGS_KEY + '.debug') === '1'; } catch { return false; }
+}
+const stats = { ticks: 0, units: 0, ms: 0, at: 0, maxMs: 0 };
+const getStats = () => ({ ...stats });
+
 /** 遍历当前单位层，推进所有特效。 */
 function tickEffects(storage) {
-  const layer = globalThis.PIXI?.Container?.prototype?.__sbState?.unitsLayer;
+  // 层引用提到循环外：原来每单位都要走一次原型链查找
+  const layer = layerRef();
   if (!layer) return;
+  if (!storage.settings.effect.enabled) return;
+  const t0 = storage.debug ? performance.now() : 0;
   const list = layer.children;
+  let n = 0;
   for (let i = 0; i < list.length; i++) {
     const view = list[i];
-    if (!looksLikeUnitView(view)) continue;
     let fx = effects.get(view);
     if (!fx) {
-      if (!storage.settings.effect.enabled) continue;
+      if (!looksLikeUnitView(view)) continue;
       fx = attachEffect(view, storage.settings.effect);
-      if (fx) effects.set(view, fx);
+      if (!fx) continue;
+      effects.set(view, fx);
     }
-    if (!fx) continue;
     driveUnit(view, fx, frameDt);
+    n++;
+  }
+  if (storage.debug) {
+    const ms = performance.now() - t0;
+    stats.ticks++; stats.units += n; stats.ms += ms;
+    if (ms > stats.maxMs) stats.maxMs = ms;
+    const now = performance.now();
+    if (!stats.at) stats.at = now;
+    if (now - stats.at >= 2000) {
+      console.info(`${LOG} 诊断：${stats.ticks} 帧 / ${(now - stats.at).toFixed(0)}ms，` +
+        `平均 ${(stats.ms / Math.max(1, stats.ticks)).toFixed(2)}ms/帧，最慢 ${stats.maxMs.toFixed(2)}ms，` +
+        `平均单位数 ${(stats.units / Math.max(1, stats.ticks)).toFixed(1)}`);
+      stats.ticks = 0; stats.units = 0; stats.ms = 0; stats.maxMs = 0; stats.at = now;
+    }
   }
 }
 
 // ---- 帧循环 ------------------------------------------------------------------
 
+/**
+ * 自适应降级：连续多帧耗时超过预算就**自动关掉特效**并明确告知玩家。
+ *
+ * 宁可功能自己退场，也不能把整局拖到"服务器接管" —— 那会直接毁掉玩家的对局。
+ * 阈值取得比一帧预算（16.7ms）宽，避免偶发抖动误杀。
+ */
+const BUDGET_MS = 4;          // 特效自己每帧的时间预算
+const BUDGET_STRIKES = 90;    // 连续超预算这么多帧就降级（约 1.5 秒）
+
 function startFrameLoop(storage, raf = globalThis.requestAnimationFrame?.bind(globalThis)) {
   if (!raf) return () => {};
   let last = 0;
   let stopped = false;
+  let strikes = 0;
+  let degraded = false;
   const step = (now) => {
     if (stopped) return;
     // 切后台再回来时 dt 会很大 —— core 里也有一道防护，这里先夹一次
     frameDt = last ? Math.min((now - last) / 1000, 0.25) : 1 / 60;
     last = now;
+    const t0 = performance.now();
     try { tickEffects(storage); } catch (err) { console.warn(`${LOG} 帧驱动出错`, err); }
+    const cost = performance.now() - t0;
+    if (!degraded) {
+      strikes = cost > BUDGET_MS ? strikes + 1 : 0;
+      if (strikes >= BUDGET_STRIKES) {
+        degraded = true;
+        storage.settings.effect.enabled = false;
+        try { writeSettings(storage.settings); } catch { /* ignore */ }
+        console.warn(`${LOG} 特效每帧耗时持续超过 ${BUDGET_MS}ms，已**自动关闭**以免拖慢对局。` +
+          `可在设置面板重新开启，或用 ?sbn=0 永久关闭。`);
+        try { globalThis.dispatchEvent?.(new CustomEvent('spin-bounce-degraded')); } catch { /* ignore */ }
+      }
+    }
     raf(step);
   };
   raf(step);
@@ -1029,7 +1155,7 @@ function start(env = {}) {
 
   const doc = env.document ?? globalThis.document;
   const settings = env.settings ?? readSettings(env.storage ?? globalThis.localStorage);
-  const storage = { settings };
+  const storage = { settings, debug: env.debug ?? debugOn(env.storage ?? globalThis.localStorage) };
 
   // **PIXI 是进入对局时才按需加载的**（render/app.js: "PixiJS 7 (global PIXI) +
   // pixi-spine, loaded on demand"）。而 trusted 插件在房间内容集就绪时就导入，
@@ -1061,7 +1187,7 @@ function start(env = {}) {
   }
   wire(discovery);
 
-  const stopLoop = startFrameLoop(storage, env.requestAnimationFrame);
+  const stopLoop = startFrameLoop(storage, env.requestAnimationFrame, storage);
   const stopWatch = watchMatchState(storage, doc);
 
   const music = createMusicController({

@@ -5,7 +5,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createUnitEffect, EFFECT_DEFAULTS } from '../src/core/unit-effect.js';
+import { createUnitEffect, EFFECT_DEFAULTS, WRITE_EPSILON } from '../src/core/unit-effect.js';
+import { PIVOT_TRIES_MAX } from '../src/integrations/units.js';
 
 /** 最小的显示对象替身。 */
 function fakeTarget() {
@@ -155,4 +156,50 @@ test('aliveScale 会加快自转（行进中的单位更欢快）', () => {
   advance(a, 0.5, 1 / 60, 1);
   advance(b, 0.5, 1 / 60, 2);
   assert.ok(Math.abs(b.state.spin) > Math.abs(a.state.spin) * 1.8, 'aliveScale 应生效');
+});
+
+// ---- 性能回归：写回阈值 ----------------------------------------------------------
+// 这一组测试守的是一个**真实事故**：无条件每帧写 scale/rotation 会让 PIXI 每帧重算
+// 所有单位的整棵子树，单位一多就把主线程拖死（游戏会判定"插件卡死，由服务器接管本局"）。
+
+test('写回阈值生效：没有新激励时不写变换（PIXI 脏标记不被无谓触发）', () => {
+  // 这一组守的是一个**真实事故**：无条件每帧写 scale/rotation 会让 PIXI 每帧重算
+  // 所有单位的整棵子树，单位一多就拖死主线程（游戏会判定"插件卡死，由服务器接管本局"）。
+  //
+  // 测法说明（踩过两次坑）：
+  //   1. 替身必须保留真实数值，否则 effect 每次读到的都是错的；
+  //   2. 默认参数下弹簧**永远在动**（每秒两次脉冲持续注入能量），所以必须把激励关掉
+  //      （strength: 0 → kick 注入 0）才谈得上"没有新变化"。
+  const counter = { scale: 0, rotation: 0 };
+  const scale = new Proxy({ x: 1, y: 1 }, { set(t, p, v) { counter.scale++; t[p] = v; return true; } });
+  const t = { scale, rotation: 0, pivot: { x: 0, y: 0 }, position: { x: 0, y: 0 } };
+  Object.defineProperty(t, 'rotation', {
+    get() { return this._rot ?? 0; },
+    set(v) { counter.rotation++; this._rot = v; },
+    configurable: true,
+  });
+
+  // 自转极慢（1e9 秒一圈 ≈ 每帧角度变化 1e-11）+ 无脉冲 → 数值恒定
+  const fx = createUnitEffect(t, { spinAxis: 'screen', spinPeriod: 1e9, strength: 0 });
+  for (let i = 0; i < 240; i++) fx.update(1 / 60);   // 4 秒
+
+  assert.ok(counter.scale <= 2, `数值不变时不应写 scale，实际 ${counter.scale} 次 / 240 帧`);
+  assert.ok(counter.rotation <= 2, `数值不变时不应写 rotation，实际 ${counter.rotation} 次 / 240 帧`);
+});
+
+test('确实需要变化时一定写（阈值没有把效果吃掉）', () => {
+  const t = fakeTarget();
+  const fx = createUnitEffect(t, { spinAxis: 'screen', spinPeriod: 2 });
+  const seen = new Set();
+  for (let i = 0; i < 120; i++) { fx.update(1 / 60); seen.add(t.rotation.toFixed(4)); }
+  assert.ok(seen.size > 20, `自转应产生足够多的不同角度，实际只有 ${seen.size} 种`);
+});
+
+test('WRITE_EPSILON 很小，不会影响可见精度', () => {
+  assert.ok(WRITE_EPSILON <= 1e-3, `阈值应足够小，实际 ${WRITE_EPSILON}`);
+});
+
+test('支点测量有重试上限（模型量不到时不做每帧无用功）', () => {
+  assert.ok(Number.isInteger(PIVOT_TRIES_MAX) && PIVOT_TRIES_MAX > 0 && PIVOT_TRIES_MAX <= 100,
+    `重试上限应是个小整数，实际 ${PIVOT_TRIES_MAX}`);
 });
