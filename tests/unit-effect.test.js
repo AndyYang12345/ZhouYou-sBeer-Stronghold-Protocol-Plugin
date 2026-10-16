@@ -180,7 +180,8 @@ test('写回阈值生效：没有新激励时不写变换（PIXI 脏标记不被
   });
 
   // 自转极慢（1e9 秒一圈 ≈ 每帧角度变化 1e-11）+ 无脉冲 → 数值恒定
-  const fx = createUnitEffect(t, { spinAxis: 'screen', spinPeriod: 1e9, strength: 0 });
+  // 连续模式（默认）不看 strength，要看 squashDepth 才能关掉自动激励
+  const fx = createUnitEffect(t, { spinAxis: 'screen', spinPeriod: 1e9, strength: 0, squashDepth: 0 });
   for (let i = 0; i < 240; i++) fx.update(1 / 60);   // 4 秒
 
   assert.ok(counter.scale <= 2, `数值不变时不应写 scale，实际 ${counter.scale} 次 / 240 帧`);

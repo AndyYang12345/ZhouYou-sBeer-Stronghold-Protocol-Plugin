@@ -184,6 +184,21 @@ export function attachSettingsPanel(o) {
   periodRow.appendChild(period.node);
   sub.appendChild(periodRow);
 
+  const smooth = slider(doc, {
+    min: 8, max: 90, step: 1, value: settings.effect.spinWritesPerSec,
+    format: (v) => `${v}/s`,
+  }, (v) => { settings.effect.spinWritesPerSec = v; o.onChange?.(settings); });
+  const smoothRow = row(doc, '自转顺滑度', '每秒刷新次数；调高更顺、更耗性能');
+  smoothRow.appendChild(smooth.node);
+  sub.appendChild(smoothRow);
+
+  const continuous = toggle(doc, settings.effect.spinSmooth, (v) => {
+    settings.effect.spinSmooth = v; o.onChange?.(settings);
+  });
+  const contRow = row(doc, '挤压用连续波形', '关闭则改成"踢一脚+回弹"（更弹但更顿）');
+  contRow.appendChild(continuous.node);
+  sub.appendChild(contRow);
+
   const axisRow = row(doc, '自转方式', '竖轴=梗图效果；平面=躺倒打转');
   const axis = el(doc, 'select');
   for (const [v, label] of [['vertical', '竖轴'], ['screen', '平面']]) {

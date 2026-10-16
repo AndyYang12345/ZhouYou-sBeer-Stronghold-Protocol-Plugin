@@ -23,7 +23,19 @@ import { createDeformState, kick, stepFixed, scaleFor, hopFor, hopVelocityFor, F
  * 观感上本来就带台阶感；24 步/圈在人眼里仍是连续转动。
  * 想要更顺滑可以调大（代价是写入更频繁），想要更省可以调小。
  */
-export const SPIN_STEPS_PER_TURN = 24;
+export const SPIN_STEPS_PER_TURN = 81;
+
+/**
+ * 自转的**每秒写入次数**（顺滑度与性能的唯一权衡点）。
+ *
+ * 为什么不是"每圈固定台阶数"：每秒写入次数 = 台阶数 ÷ 周期，若固定台阶数，
+ * 周期一变顺滑度就跟着变（调快自转 → 台阶变粗）。固定**每秒写入次数**才能让
+ * 任意周期下的观感一致。
+ *
+ * 默认 30：1.1 秒/圈约 33 台阶（10.9°/台阶，看不出）；2.7 秒/圈约 81 台阶。
+ * 早期版本只有 8.9 次/秒 —— 1.1 秒/圈仅 10 台阶（36°/台阶），那是一眼可见的卡顿。
+ */
+export const SPIN_WRITES_PER_SEC = 30;
 
 /** 默认参数。手感来自参考实现，自转周期也沿用它的 2.7 秒。 */
 export const EFFECT_DEFAULTS = Object.freeze({
@@ -32,6 +44,14 @@ export const EFFECT_DEFAULTS = Object.freeze({
   spinPeriod: 2.7,         // 自转一圈的秒数（参考实现默认 2.7）
   spinAxis: 'vertical',    // 'vertical' 竖轴（梗图效果）| 'screen' 屏幕平面内转
   spinSteps: SPIN_STEPS_PER_TURN, // 自转量化台阶（见 SPIN_STEPS_PER_TURN 的说明）
+  // 挤压的驱动方式：
+  //   true（默认）—— **连续正弦驱动**：形变按平滑波形推，帧与帧之间没有台阶
+  //   false        —— 冲量式：每 1/pulsesPerSecond 秒踢一脚，靠欠阻尼弹簧回弹
+  // 冲量式的起跳很陡，快速脉冲下会看出"一顿一顿"；连续式明显更顺，手感略软。
+  spinSmooth: true,
+  squashDepth: 0.14,   // 连续模式的压扁深度基准（实际深度 = squashDepth × strength）
+  smoothFollow: 22,    // 连续模式下"跟随目标"的速度（越大越贴近波形、越小越软）
+  manualImpulse: 0.02, // 连续模式下把手动冲量（kick）换算成额外位移的比例
   spinPivot: false,        // 是否把旋转支点移到身体中部（默认否，见 applyPivot 的两次踩坑记录）
   pulsesPerSecond: 2,      // 每秒挤压几次（参考实现是 2）
   hopAmplitude: 0.115,     // 离地弹跳幅度（模型高度归一化单位，1 ≈ 一个单位高）
@@ -123,13 +143,32 @@ export function createUnitEffect(target, options = {}) {
 
     const bouncing = st.alive || cfg.deadBounce;
     if (bouncing) {
-      // 脉冲与自转共用时钟，所以"压扁"会跟着自转一起走，频率上是和谐的
-      const idx = Math.floor(st.time * cfg.pulsesPerSecond);
-      if (idx !== st.pulse) {
-        st.pulse = idx;
-        kick(deform, cfg.strength);
+      if (cfg.spinSmooth) {
+        // **连续正弦驱动**：不再"踢一脚再等弹簧回弹"，而是让目标形变按平滑波形走。
+        // 好处是帧与帧之间没有陡跳，快速脉冲下也不会看起来一顿一顿。
+        //
+        // 手动冲量（点击 / 落地 / 碰撞调用 kick()）在这里**要单独处理**：
+        // 早期版本直接 `deform.sv = 0`，等于把手动冲量抹掉 —— 那些交互就失效了。
+        // 现在把剩余速度叠加到目标上，让它自然衰减，手动冲量仍然看得见。
+        const omega = 2 * Math.PI * cfg.pulsesPerSecond;
+        // 深度乘上 strength，"Q弹强度"滑杆在连续模式下才有效（否则它形同虚设）
+        const wave = -cfg.squashDepth * cfg.strength * (1 - Math.cos(st.time * omega)) / 2;
+        const manual = deform.sv * cfg.manualImpulse;   // 把残余速度换算成一点额外位移
+        const target = wave + manual;
+        deform.squash += (target - deform.squash) * Math.min(1, d * cfg.smoothFollow);
+        // 手动冲量按弹簧自身的阻尼衰减（★ 阻尼在 `deform.opts` 里，不在 `cfg` 上 ——
+        // 早先写成 `cfg.damping` 得到 undefined，一步就把 sv 变成 NaN，整支 effect 全废）
+        deform.sv -= deform.opts.damping * deform.sv * d;
+        if (Math.abs(deform.sv) < 1e-4) deform.sv = 0;
+      } else {
+        // 冲量式：每 1/pulsesPerSecond 秒踢一脚，靠欠阻尼弹簧过冲回弹（原实现）
+        const idx = Math.floor(st.time * cfg.pulsesPerSecond);
+        if (idx !== st.pulse) {
+          st.pulse = idx;
+          kick(deform, cfg.strength);
+        }
+        stepFixed(deform, d, cfg.strength, cfg.fixedStep);
       }
-      stepFixed(deform, d, cfg.strength, cfg.fixedStep);
     } else {
       // 死亡后让它自然收敛回静止，而不是"啪"地弹回去
       stepFixed(deform, d, cfg.strength, cfg.fixedStep);
@@ -239,8 +278,15 @@ function apply(st) {
   // 于是 **steps = SPIN_WRITES_PER_SEC × spinPeriod**。
   // 周期越长，一圈可以分更多步而不增加每秒写入 —— 慢速自转更顺滑，快速自转也不会失控。
   // 下限 8 步（慢速也别看出台阶）、上限 60 步（不超过 60fps，超过就没意义了）。
-  const rateTarget = (st.cfg.spinSteps ?? SPIN_STEPS_PER_TURN) / 2.7; // 默认 24 步 / 2.7 秒
-  const steps = Math.max(8, Math.min(60, Math.round(rateTarget * st.cfg.spinPeriod)));
+  // 目标是"每秒写入次数恒定"：steps = 每秒写入率 × 周期。
+  //
+  // 权衡（这是唯一要调的量）：
+  //   · 写入率 ↑ → 自转更顺滑，但每写一次就让 PIXI 重算该单位整棵子树（性能成本）
+  //   · 写入率 ↓ → 省性能，但快速自转时会看出台阶
+  // 默认 30 次/秒：在 1.1 秒/圈（较快）下约 33 台阶/圈（10.9°/台阶），肉眼已看不出；
+  // 早期用 8.9 次/秒时，1.1 秒/圈只有 10 台阶（约 36°/台阶）—— 那才是一眼可见的卡顿。
+  const steps = Math.max(8, Math.min(st.cfg.spinStepsMax ?? 240,
+    Math.round((st.cfg.spinWritesPerSec ?? SPIN_WRITES_PER_SEC) * st.cfg.spinPeriod)));
   const q = Math.round(st.spin / (2 * Math.PI) * steps) / steps * 2 * Math.PI;
 
   if (st.cfg.spinAxis === 'screen') {

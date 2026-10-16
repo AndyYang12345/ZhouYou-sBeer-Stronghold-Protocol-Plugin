@@ -281,7 +281,8 @@ export function applyLiveSettings(storage, host) {
     Object.assign(fx.state.cfg, {
       strength: e.strength,
       spinAxis: e.spinAxis,
-      spinSteps: e.spinSteps,
+      spinWritesPerSec: e.spinWritesPerSec,
+      spinSmooth: e.spinSmooth,
       hopAmplitude: e.hopAmplitude,
       pulsesPerSecond: e.pulsesPerSecond,
       deadSpinScale: e.deadSpinScale,
