@@ -661,6 +661,23 @@ const MUSIC_ELEMENT_ID = 'sp-spin-music';
 /** 音源路径写在 <html> 的这个属性上，便于换歌不用改代码。 */
 const MUSIC_SOURCE_ATTR = 'data-sp-spin-music';
 
+/**
+ * 约定的部署路径（按顺序探测，第一个能用的胜出）。
+ *
+ * 音乐文件**不在仓库里**：它有自己的版权，体积也大。部署者把它放进游戏目录即可 ——
+ * 放在这任一个位置就能被自动找到，不必改任何代码或属性。
+ *
+ * 注意这些路径由游戏的静态服务直接下发（`public/` 是静态目录），与插件沙箱无关 ——
+ * trusted 插件运行在主页面，没有那条 iframe CSP。
+ */
+const MUSIC_CANDIDATES = Object.freeze([
+  '/sp-music/spin-bounce.m4a',
+  '/sp-music/spin-bounce.mp3',
+  '/sp-music/spin-bounce.ogg',
+  '/sp-music/music.m4a',
+  '/sp-music/music.mp3',
+]);
+
 const AUDIO_DEFAULTS = Object.freeze({
   enabled: false,     // **默认关闭**：自动播放会被浏览器拦，且没理由一进页面就吵
   volume: 0.55,       // 独立音量；与游戏 BGM 各管各的
@@ -691,11 +708,64 @@ function createMusicController(opts = {}) {
     fadeTimer: 0,
   };
 
-  state.resolveSrc = () => {
-    if (state.src) return state.src;
-    if (!doc?.documentElement) return null;
-    return doc.documentElement.getAttribute(MUSIC_SOURCE_ATTR) || null;
+  /**
+   * 音源候选路径，按优先级：
+   *   1. 显式传入的 `opts.src`
+   *   2. `<html data-sp-spin-music="...">`（便于换歌不改代码）
+   *   3. 约定的部署路径（见 MUSIC_CANDIDATES）
+   *
+   * 为什么是**候选列表**而不是单个路径：音乐文件不在本仓库里（版权与体积），
+   * 由部署者放进游戏目录。探测几个约定位置比要求改 HTML 属性省事得多 ——
+   * 放好文件就能用，换歌也只是换个文件名。
+   */
+  state.sources = () => {
+    const out = [];
+    if (state.src) out.push(state.src);
+    try {
+      const attr = doc?.documentElement?.getAttribute(MUSIC_SOURCE_ATTR);
+      if (attr) out.push(attr);
+    } catch { /* ignore */ }
+    for (const c of MUSIC_CANDIDATES) if (!out.includes(c)) out.push(c);
+    return out;
   };
+
+  /** 上一次解析的结果（面板显示用）。 */
+  state.resolved = null;
+
+  /**
+   * 依次探测候选路径，返回第一个真正能解码播放的。
+   *
+   * 用 `canplay` 事件而不是 fetch：同源静态文件的 HEAD 未必被支持，
+   * 而 `<audio>` 自身的加载事件就是最真实的可用性判断。
+   */
+  state.probe = () => new Promise((resolve) => {
+    if (!doc) return resolve(null);
+    const list = state.sources();
+    if (!list.length) return resolve(null);
+    let i = 0;
+    const tryNext = () => {
+      if (i >= list.length) return resolve(null);
+      const src = list[i++];
+      const probe = doc.createElement('audio');
+      probe.preload = 'metadata';
+      let settled = false;
+      const done = (ok) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        probe.removeAttribute('src');
+        try { probe.load(); } catch { /* ignore */ }
+        if (ok) { state.resolved = src; resolve(src); } else tryNext();
+      };
+      // 6 秒够一次本地静态请求；超时按不可用处理，继续试下一个
+      const timer = setTimeout(() => done(false), 6000);
+      probe.addEventListener('canplaythrough', () => done(true), { once: true });
+      probe.addEventListener('loadedmetadata', () => done(true), { once: true });
+      probe.addEventListener('error', () => done(false), { once: true });
+      probe.src = src;
+    };
+    tryNext();
+  });
 
   state.ensureElement = () => {
     if (state.el) return state.el;
@@ -703,7 +773,7 @@ function createMusicController(opts = {}) {
     let el = opts.elementId ? doc.getElementById(opts.elementId) : null;
     if (!el) el = doc.getElementById(MUSIC_ELEMENT_ID);
     if (!el) {
-      const src = state.resolveSrc();
+      const src = state.resolved || state.resolveSrc();
       if (!src) return null;
       el = doc.createElement('audio');
       el.id = MUSIC_ELEMENT_ID;
@@ -717,6 +787,13 @@ function createMusicController(opts = {}) {
     state.el = el;
     state.ready = true;
     return el;
+  };
+
+  /** 单一路径的直读（保留给已注入 <audio> 的场景）。 */
+  state.resolveSrc = () => {
+    if (state.src) return state.src;
+    if (!doc?.documentElement) return null;
+    return doc.documentElement.getAttribute(MUSIC_SOURCE_ATTR) || null;
   };
 
   /** 淡入到目标音量。 */
@@ -743,6 +820,10 @@ function createMusicController(opts = {}) {
    */
   state.play = async () => {
     if (cfg.enabled !== true) return false;
+    // 还没解析出音源就先探测（按候选路径逐个试），避免"开关打开了却没声音"
+    if (!state.resolved && !state.el) {
+      await state.probe();
+    }
     const el = state.ensureElement();
     if (!el) return false;
     try {
