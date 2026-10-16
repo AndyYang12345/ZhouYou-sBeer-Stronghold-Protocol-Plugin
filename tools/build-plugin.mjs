@@ -30,6 +30,7 @@ const ORDER = [
   'core/physics.js',
   'core/unit-effect.js',
   'integrations/units.js',
+  'integrations/host.js',
   'integrations/audio.js',
   'integrations/panel.js',
   'client.js',
