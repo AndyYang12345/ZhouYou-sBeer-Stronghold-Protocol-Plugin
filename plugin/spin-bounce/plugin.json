@@ -8,8 +8,8 @@
   },
   "englishName": "Spin & Bounce",
   "description": "把「粥友的酒」那个梗做成单位特效：我方与敌方单位都在自己的格子里同步压扁—回弹，同时绕竖直轴自转（宽度按 cos θ 收缩、过零时自然镜像，并换成真正的背面立绘）。可在设置面板里分别开关「粥友的酒」与「喝酒的小曲」，后者播放你自备的音乐。",
-  "version": "0.1.0",
-  "app": ">=0.3.0 <0.4.0",
+  "version": "0.2.0",
+  "app": ">=0.3.0 <0.5.0",
   "api": 1,
   "class": "trusted",
   "scope": [
@@ -25,5 +25,12 @@
   ],
   "entry": {
     "client": "client.js"
-  }
+  },
+  "versions": [
+    "act1autochess",
+    "act1autochess@V1_1",
+    "act2autochess",
+    "act2autochess@V2_1",
+    "act3autochess@V3_1"
+  ]
 }
